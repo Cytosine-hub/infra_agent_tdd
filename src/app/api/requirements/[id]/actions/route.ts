@@ -163,6 +163,18 @@ export const POST = apiHandler(
 
       case "retrigger_dev": {
         if (!githubConfigured()) return badRequest("GitHub 未配置");
+        // 人工修改过方案则保存，后续重试沿用
+        if (parsed.data.engine || parsed.data.model || parsed.data.effort) {
+          updateRequirement(id, {
+            execPlan: {
+              engine,
+              model: model ?? "",
+              effort: effort ?? "medium",
+              rationale: plan?.rationale ?? "人工指定",
+              source: "manual",
+            },
+          });
+        }
         enqueueDevTask(id, engine, { model, effort });
         addEvent(
           id,

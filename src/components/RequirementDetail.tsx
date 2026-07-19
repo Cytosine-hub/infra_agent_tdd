@@ -360,6 +360,19 @@ export default function RequirementDetail({
               </button>
             )}
 
+            {/* 开发中/审查中：组长可修改执行方案后重新触发（应对模型不可用等失败场景） */}
+            {(req.status === "developing" || req.status === "in_review") && isLead && (
+              <ExecPlanCard
+                savedPlan={req.execPlan}
+                onEvaluate={evaluatePlan}
+                evaluating={evaluating}
+                starting={busy === "retrigger_dev"}
+                onStart={(choice) => act("retrigger_dev", choice)}
+                startLabel="🔁 重新触发开发（按上方方案）"
+                startingLabel="触发中…"
+              />
+            )}
+
             {(req.status === "developing" || req.status === "in_review") && (
               <button
                 className="btn-secondary"

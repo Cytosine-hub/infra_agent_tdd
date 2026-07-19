@@ -22,12 +22,16 @@ export default function ExecPlanCard({
   onStart,
   evaluating,
   starting,
+  startLabel = "🚀 启动 Agent 开发",
+  startingLabel = "创建 Issue 中…",
 }: {
   savedPlan: ExecPlan | null;
   onEvaluate: () => Promise<ExecPlan | null>;
   onStart: (choice: { engine: string; model: string; effort: string }) => void;
   evaluating: boolean;
   starting: boolean;
+  startLabel?: string;
+  startingLabel?: string;
 }) {
   const [engines, setEngines] = useState<EngineInfo[]>([]);
   const [plan, setPlan] = useState<ExecPlan | null>(savedPlan);
@@ -137,7 +141,7 @@ export default function ExecPlanCard({
         disabled={starting || evaluating || !engine}
         onClick={() => onStart({ engine, model, effort })}
       >
-        {starting ? "创建 Issue 中…" : "🚀 启动 Agent 开发"}
+        {starting ? startingLabel : startLabel}
       </button>
     </div>
   );

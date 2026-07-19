@@ -14,7 +14,9 @@ export const POST = apiHandler(
     const isLead =
       user.role === "admin" || (user.role === "lead" && user.team === requirement.team);
     if (!isLead) return forbidden("仅本组组长或管理员可评估执行方案");
-    if (requirement.status !== "testcases_approved" && requirement.status !== "developing") {
+    if (
+      !["testcases_approved", "developing", "in_review"].includes(requirement.status)
+    ) {
       return badRequest("仅在用例审核通过后可评估执行方案");
     }
 
