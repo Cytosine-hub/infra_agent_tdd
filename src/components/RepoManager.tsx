@@ -3,6 +3,17 @@
 import { useEffect, useState } from "react";
 import type { Repo } from "@/lib/types";
 
+function OnboardBadge({ repo }: { repo: Repo }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    ready: { label: "✅ 就绪", cls: "bg-emerald-50 text-emerald-700" },
+    pending: { label: "⏳ 待入驻", cls: "bg-zinc-100 text-zinc-600" },
+    indexing: { label: `⚙️ 入驻中${repo.onboardStep ? "·" + repo.onboardStep : ""}`, cls: "bg-sky-50 text-sky-700" },
+    failed: { label: "⚠️ 入驻失败", cls: "bg-red-50 text-red-700" },
+  };
+  const s = map[repo.onboardStatus] ?? map.ready;
+  return <span className={`rounded-full px-2 py-0.5 text-[11px] ${s.cls}`}>{s.label}</span>;
+}
+
 // 仓库管理：组长/管理员维护可绑定的目标仓库列表
 export default function RepoManager() {
   const [repos, setRepos] = useState<Repo[]>([]);
@@ -22,6 +33,22 @@ export default function RepoManager() {
       .then((d) => setTeams(d.teams.map((t: { name: string }) => t.name)));
   }
   useEffect(load, []);
+
+  // 有仓库在入驻中时自动刷新
+  useEffect(() => {
+    if (!repos.some((r) => r.onboardStatus === "pending" || r.onboardStatus === "indexing")) return;
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, [repos]);
+
+  async function reonboard(id: number) {
+    await fetch("/api/repos", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    load();
+  }
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
@@ -108,22 +135,47 @@ export default function RepoManager() {
         )}
         {repos.map((r) => (
           <div key={r.id} className="flex items-center justify-between px-5 py-3.5">
-            <div>
-              <div className="text-sm font-medium">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
                 {r.fullName}
                 <span
-                  className={`ml-2 rounded-full px-2 py-0.5 text-[11px] ${
+                  className={`rounded-full px-2 py-0.5 text-[11px] ${
                     r.team ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"
                   }`}
                 >
                   {r.team ? `${r.team}专属` : "公共"}
                 </span>
+                <OnboardBadge repo={r} />
               </div>
               {r.description && <div className="text-xs text-zinc-500">{r.description}</div>}
+              {r.onboardStatus === "failed" && r.onboardError && (
+                <div className="mt-0.5 max-w-md truncate text-[11px] text-red-500">
+                  入驻失败：{r.onboardError}
+                </div>
+              )}
+              {r.onboardPr && (
+                <a
+                  href={r.onboardPr}
+                  target="_blank"
+                  className="text-[11px] text-sky-600 hover:underline"
+                >
+                  agent.md PR →
+                </a>
+              )}
             </div>
-            <button className="text-xs text-red-500 hover:underline" onClick={() => remove(r.id)}>
-              移除
-            </button>
+            <div className="flex shrink-0 items-center gap-3">
+              {(r.onboardStatus === "ready" || r.onboardStatus === "failed") && (
+                <button
+                  className="text-xs text-zinc-500 hover:underline"
+                  onClick={() => reonboard(r.id)}
+                >
+                  重新入驻
+                </button>
+              )}
+              <button className="text-xs text-red-500 hover:underline" onClick={() => remove(r.id)}>
+                移除
+              </button>
+            </div>
           </div>
         ))}
       </div>

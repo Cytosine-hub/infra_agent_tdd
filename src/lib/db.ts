@@ -49,7 +49,12 @@ export function db(): DatabaseSync {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL UNIQUE,
       description TEXT NOT NULL DEFAULT '',
-      team TEXT NOT NULL DEFAULT ''
+      team TEXT NOT NULL DEFAULT '',
+      onboard_status TEXT NOT NULL DEFAULT 'ready',
+      onboard_step TEXT NOT NULL DEFAULT '',
+      onboard_error TEXT NOT NULL DEFAULT '',
+      onboard_pr TEXT NOT NULL DEFAULT '',
+      indexed_at TEXT
     );
     CREATE TABLE IF NOT EXISTS agent_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,6 +120,14 @@ function migrate(d: DatabaseSync) {
   const pcols = d.prepare("PRAGMA table_info(repos)").all() as { name: string }[];
   if (pcols.length > 0 && !pcols.some((c) => c.name === "team")) {
     d.exec("ALTER TABLE repos ADD COLUMN team TEXT NOT NULL DEFAULT ''");
+  }
+  // 老仓库默认 ready（已在用，不强制重新入驻）；新加的仓库由 addRepo 显式置 pending
+  if (pcols.length > 0 && !pcols.some((c) => c.name === "onboard_status")) {
+    d.exec("ALTER TABLE repos ADD COLUMN onboard_status TEXT NOT NULL DEFAULT 'ready'");
+    d.exec("ALTER TABLE repos ADD COLUMN onboard_step TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE repos ADD COLUMN onboard_error TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE repos ADD COLUMN onboard_pr TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE repos ADD COLUMN indexed_at TEXT");
   }
 }
 
@@ -315,7 +328,17 @@ export function repoExists(fullName: string): boolean {
 }
 
 function rowToRepo(r: any): Repo {
-  return { id: r.id, fullName: r.full_name, description: r.description, team: r.team ?? "" };
+  return {
+    id: r.id,
+    fullName: r.full_name,
+    description: r.description,
+    team: r.team ?? "",
+    onboardStatus: r.onboard_status ?? "ready",
+    onboardStep: r.onboard_step ?? "",
+    onboardError: r.onboard_error ?? "",
+    onboardPr: r.onboard_pr ?? "",
+    indexedAt: r.indexed_at ?? null,
+  };
 }
 
 export function listRepos(): Repo[] {
@@ -329,10 +352,67 @@ export function getRepoByName(fullName: string): Repo | null {
 }
 
 export function addRepo(fullName: string, description = "", team = ""): Repo {
+  // 新加仓库置 pending，由 runner 后台入驻（clone + codegraph 索引 + agent.md）
   db()
-    .prepare("INSERT OR IGNORE INTO repos (full_name, description, team) VALUES (?, ?, ?)")
+    .prepare(
+      "INSERT OR IGNORE INTO repos (full_name, description, team, onboard_status) VALUES (?, ?, ?, 'pending')"
+    )
     .run(fullName, description, team);
   return getRepoByName(fullName)!;
+}
+
+export function getRepoById(id: number): Repo | null {
+  const r = db().prepare("SELECT * FROM repos WHERE id = ?").get(id) as any;
+  return r ? rowToRepo(r) : null;
+}
+
+export function updateRepoOnboard(
+  id: number,
+  patch: Partial<{
+    onboardStatus: string;
+    onboardStep: string;
+    onboardError: string;
+    onboardPr: string;
+    indexedAt: string;
+  }>
+) {
+  const colMap: Record<string, string> = {
+    onboardStatus: "onboard_status",
+    onboardStep: "onboard_step",
+    onboardError: "onboard_error",
+    onboardPr: "onboard_pr",
+    indexedAt: "indexed_at",
+  };
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  for (const [k, v] of Object.entries(patch)) {
+    if (!colMap[k]) continue;
+    sets.push(`${colMap[k]} = ?`);
+    vals.push(v);
+  }
+  if (!sets.length) return;
+  db()
+    .prepare(`UPDATE repos SET ${sets.join(", ")} WHERE id = ?`)
+    .run(...(vals as never[]), id);
+}
+
+// runner 认领下一个待入驻仓库（置 indexing，避免重复认领）
+export function claimNextPendingRepo(): Repo | null {
+  const r = db()
+    .prepare("SELECT * FROM repos WHERE onboard_status = 'pending' ORDER BY id ASC LIMIT 1")
+    .get() as any;
+  if (!r) return null;
+  db().prepare("UPDATE repos SET onboard_status = 'indexing', onboard_step = 'queued' WHERE id = ?").run(r.id);
+  return getRepoById(r.id);
+}
+
+// 标记 pending 状态供 runner 认领（手动重新入驻用）
+export function requeueRepoOnboard(id: number) {
+  db()
+    .prepare(
+      "UPDATE repos SET onboard_status = 'pending', onboard_step = '', onboard_error = '' WHERE id = ?"
+    )
+    .run(id);
 }
 
 export function deleteRepo(id: number) {

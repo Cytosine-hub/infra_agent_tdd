@@ -43,16 +43,16 @@ export default function AgentsMonitorPage() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
-    const res = await fetch("/api/agent-tasks");
-    if (!res.ok) return;
-    const all: TaskRow[] = (await res.json()).tasks;
-    const order = ["failed", "running", "queued", "succeeded"];
-    all.sort(
-      (a, b) => order.indexOf(a.status) - order.indexOf(b.status) || b.id - a.id
-    );
-    setTasks(all);
-    setLoaded(true);
+  const load = useCallback(() => {
+    fetch("/api/agent-tasks")
+      .then((r) => (r.ok ? r.json() : { tasks: [] }))
+      .then((d) => {
+        const all: TaskRow[] = d.tasks;
+        const order = ["failed", "running", "queued", "succeeded"];
+        all.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status) || b.id - a.id);
+        setTasks(all);
+        setLoaded(true);
+      });
   }, []);
 
   useEffect(() => {

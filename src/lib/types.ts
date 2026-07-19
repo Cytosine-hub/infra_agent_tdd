@@ -72,6 +72,12 @@ export interface Repo {
   fullName: string; // owner/repo
   description: string;
   team: string; // '' = 公共仓库；否则仅该小组成员可选用
+  // 入驻状态：ready 可用 / pending 待入驻 / indexing 入驻中 / failed 失败
+  onboardStatus: "ready" | "pending" | "indexing" | "failed";
+  onboardStep: string;
+  onboardError: string;
+  onboardPr: string; // agent.md PR 链接（如有）
+  indexedAt: string | null;
 }
 
 // 启动开发前的执行方案（AI 评估 + 人工可改）

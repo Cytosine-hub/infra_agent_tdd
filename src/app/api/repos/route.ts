@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { addRepo, deleteRepo, listRepos, teamExists } from "@/lib/db";
+import { addRepo, deleteRepo, getRepoById, listRepos, requeueRepoOnboard, teamExists } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { selectableRepos } from "@/lib/repo-access";
@@ -43,4 +43,14 @@ export const DELETE = apiHandler(async (req: NextRequest) => {
   if (!id) return badRequest("缺少 id");
   deleteRepo(id);
   return NextResponse.json({ ok: true });
+});
+
+// 重新入驻（重建索引 + 重新分析 agent.md）
+export const PATCH = apiHandler(async (req: NextRequest) => {
+  const user = await requireUser();
+  if (user.role === "member") return forbidden("仅组长或管理员可维护仓库列表");
+  const { id } = (await req.json()) as { id?: number };
+  if (!id || !getRepoById(id)) return badRequest("仓库不存在");
+  requeueRepoOnboard(id);
+  return NextResponse.json({ repo: getRepoById(id) });
 });

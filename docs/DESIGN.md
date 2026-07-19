@@ -230,6 +230,21 @@ AI 环节全景（均为本地 CLI，不依赖云端 API Key）：
   动手前查结构、改动前查影响面。claude/codex 均为全权限模式可直接调用，无需改 allowedTools。
   任务新增「建代码索引」步骤。踩坑：fresh clone 上必须用 `codegraph init`（`index` 需已初始化）。
 
+### v11（2026-07-19）：仓库入驻（onboarding）
+
+仓库加入门户时一次性完成"分析建库"，而非每个任务临时抱佛脚：
+
+- **入驻流程**（后台异步，runner 优先处理）：加仓库置 `pending` → runner 认领 →
+  ① 服务器建**持久镜像 clone + codegraph 索引**（`data/repos/<repo>/`）
+  ② 用本地 agent（`AGENT_ONBOARD_ENGINE`，默认 claude，借助 codegraph 理解代码）**分析生成/补齐 agent.md**：
+  仓库已有则检查是否覆盖必备章节、缺则补；无则从零生成 → 通过 GitHub API 开 PR（不覆盖、不直推）
+  → 置 `ready`。
+- **门禁**：仓库 `ready` 前 `start_dev` 被拒（"仓库正在入驻中"），入驻失败提示重新入驻。
+- **索引复用**：开发/审查任务不再每次全量 `init`，而是**拷贝镜像的 `.codegraph/` + `codegraph sync`**（增量，快）；
+  无镜像时回退全量 init。已实测拷贝+sync 后查询正常。
+- **UI**：仓库管理显示入驻状态（就绪/待入驻/入驻中·步骤/失败）、agent.md PR 链接、重新入驻按钮，入驻中自动刷新。
+- 老仓库迁移默认 `ready`（不强制重入驻）；新加仓库自动 `pending`。
+
 ## 6. 后续演进
 
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { addEvent, getRequirement, updateRequirement } from "@/lib/db";
+import { addEvent, getRepoByName, getRequirement, updateRequirement } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { canPerform, nextTestApprovalState, type Action } from "@/lib/workflow";
@@ -130,6 +130,15 @@ export const POST = apiHandler(
       case "start_dev": {
         if (!githubConfigured()) {
           return badRequest("GitHub 未配置。请在 .env.local 中设置 GITHUB_TOKEN 后重启服务");
+        }
+        // 门禁：仓库入驻（建索引 + agent.md）完成前不能启动开发
+        const repo = getRepoByName(requirement.repo);
+        if (repo && repo.onboardStatus !== "ready") {
+          const label =
+            repo.onboardStatus === "failed"
+              ? `入驻失败（${repo.onboardError}），请在仓库管理中重新入驻`
+              : `仓库正在入驻中（${repo.onboardStep || "排队"}），请稍候再启动开发`;
+          return badRequest(label);
         }
         const { issueNumber, issueUrl, branch } = await createIssueForRequirement(requirement);
         updateRequirement(id, {

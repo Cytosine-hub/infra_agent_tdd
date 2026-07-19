@@ -17,6 +17,7 @@ import type { Requirement, TestCase } from "./types";
 import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from "./testcase-gen";
 import { ensureGuardApproved } from "./guard";
 import { getDefaultBranch } from "./github";
+import { cloneUrl, codegraphAvailable, DATA_DIR, prepareWorkspaceIndex } from "./repo-index";
 
 const execFileP = promisify(execFile);
 
@@ -101,44 +102,9 @@ export async function availableEngines(): Promise<string[]> {
   return found;
 }
 
-const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
 const TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MIN ?? 30) * 60_000;
 
-function cloneUrl(repo: string): string {
-  const token = process.env.GITHUB_TOKEN;
-  return token
-    ? `https://x-access-token:${token}@github.com/${repo}.git`
-    : `git@github.com:${repo}.git`;
-}
-
-// ---- codegraph 代码智能：为工作区建索引，并在 prompt 里引导 agent 使用 ----
-async function codegraphAvailable(): Promise<boolean> {
-  try {
-    await execFileP("which", ["codegraph"]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// 在工作区建 codegraph 索引（best-effort，失败不影响任务）。返回是否建成。
-async function buildCodegraphIndex(workspace: string): Promise<boolean> {
-  try {
-    // .codegraph/ 是本地索引，绝不能进 PR：加入 git 本地排除
-    fs.appendFileSync(path.join(workspace, ".git", "info", "exclude"), "\n.codegraph/\n");
-    // 用 init 而非 index：index 需已初始化，fresh clone 上必须用 init 来初始化并建索引
-    await execFileP("codegraph", ["init", "."], {
-      cwd: workspace,
-      timeout: 180_000,
-      maxBuffer: 20 * 1024 * 1024,
-    });
-    return true;
-  } catch (err) {
-    console.error("codegraph 建索引失败（跳过，不影响任务）:", err);
-    return false;
-  }
-}
-
+// codegraph 代码智能：为 agent 提示引导使用（索引复用逻辑见 repo-index.ts）
 function codegraphHint(indexed: boolean): string {
   if (!indexed) return "";
   return [
@@ -285,7 +251,7 @@ async function runTask(taskId: number) {
     if (await codegraphAvailable()) {
       updateAgentTask(task.id, { step: "index" });
       logLine("codegraph index");
-      cgHint = codegraphHint(await buildCodegraphIndex(workspace));
+      cgHint = codegraphHint(await prepareWorkspaceIndex(workspace, req.repo));
     }
 
     // 3. 本地 CLI 开发
@@ -502,7 +468,7 @@ async function runReviewTask(taskId: number) {
     if (await codegraphAvailable()) {
       updateAgentTask(task.id, { step: "index" });
       logLine("codegraph index");
-      cgHint = codegraphHint(await buildCodegraphIndex(workspace));
+      cgHint = codegraphHint(await prepareWorkspaceIndex(workspace, req.repo));
     }
 
     updateAgentTask(task.id, { step: "review" });

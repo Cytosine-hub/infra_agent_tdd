@@ -16,8 +16,9 @@ for (const file of [".env.local", ".env"]) {
   }
 }
 
-import { claimNextQueuedTask, failStaleRunningTasks } from "../src/lib/db";
+import { claimNextPendingRepo, claimNextQueuedTask, failStaleRunningTasks } from "../src/lib/db";
 import { executeTask, pidAlive } from "../src/lib/agent-runner";
+import { runRepoOnboard } from "../src/lib/onboard";
 
 const POLL_MS = 3000;
 let stopping = false;
@@ -28,6 +29,16 @@ async function main() {
   console.log(`[runner] agent runner 已启动，轮询间隔 ${POLL_MS}ms`);
 
   while (!stopping) {
+    // 优先处理仓库入驻（新加仓库须先建索引 + agent.md 才能开发）
+    const repo = claimNextPendingRepo();
+    if (repo) {
+      console.log(`[runner] 入驻仓库 ${repo.fullName}（建索引 + agent.md）`);
+      const t0 = Date.now();
+      await runRepoOnboard(repo.id);
+      console.log(`[runner] 仓库 ${repo.fullName} 入驻结束，耗时 ${Math.round((Date.now() - t0) / 1000)}s`);
+      continue;
+    }
+
     const task = claimNextQueuedTask();
     if (task) {
       console.log(
