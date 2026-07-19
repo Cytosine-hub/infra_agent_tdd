@@ -6,7 +6,7 @@ import { ROLE_LABELS } from "@/lib/types";
 import LogoutButton from "@/components/LogoutButton";
 
 export const metadata: Metadata = {
-  title: "运维需求交付门户",
+  title: "集成中心需求交付门户",
   description: "需求收集 → 审核 → AI 生成测试用例 → Agent 开发 → CI/CD 的一体化工作流",
 };
 
@@ -20,9 +20,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <div className="flex items-center gap-8">
               <Link href="/" className="flex items-center gap-2 font-semibold">
                 <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-zinc-900 text-sm text-white">
-                  运
+                  集
                 </span>
-                运维需求交付门户
+                集成中心需求交付门户
               </Link>
               <nav className="flex items-center gap-5 text-sm text-zinc-600">
                 <Link href="/" className="hover:text-zinc-900">

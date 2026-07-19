@@ -1,6 +1,6 @@
-# 运维需求交付门户
+# 集成中心需求交付门户
 
-需求收集 → 组长审核 → AI 生成测试用例 → 双方审核 → Claude Code Agent 开发 → 测试 → GitHub CI/CD 的一体化工作流平台。设计文档见 [docs/DESIGN.md](docs/DESIGN.md)。
+集成中心的需求交付门户：需求收集 → 组长审核 → AI 生成测试用例 → 双方审核 → Claude Code/Codex Agent 开发 → 测试 → GitHub CI/CD 的一体化工作流平台。设计文档见 [docs/DESIGN.md](docs/DESIGN.md)。
 
 ## 本地部署
 
@@ -14,7 +14,7 @@ npm run runner     # 本地 Agent 执行守护进程（另开终端/后台常驻
 
 门户与 runner 是两个独立进程：门户只负责 Web 与任务入队，runner 负责执行用例生成/开发/审查任务——**重启门户不会中断进行中的 Agent 任务**。
 
-无需任何外部配置即可运行：数据存在本地 SQLite（`./data/portal.db`），首次启动自动建表并写入各小组演示账号（组长/组员），登录页选择账号即可体验完整审批流。管理员登录后可在「设置」中维护目标仓库列表与账号/角色（组员、组长、管理员）。
+无需任何外部配置即可运行：数据存在本地 SQLite（`./data/portal.db`），首次启动自动建表并写入各小组演示账号（组长/组员），内置账号用**账号密码登录**（默认密码 `portal123`，可用 DEFAULT_PASSWORD 覆盖；上线前请在「账号管理」重置）。登录页预留 GitHub/GitLab 图标按钮，配置 OAuth 后即可启用。管理员登录后可在「设置」中维护目标仓库列表与账号/角色（组员、组长、管理员）。
 
 ## 可选配置（.env.local，参考 .env.example）
 

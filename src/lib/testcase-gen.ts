@@ -51,7 +51,7 @@ export async function generateTestCases(req: Requirement): Promise<{
 
 function genPrompt(req: Requirement): string {
   return [
-    "你是一名资深测试工程师，为运维门户网站的功能需求编写验收测试用例。",
+    "你是一名资深测试工程师，为集成中心门户网站的功能需求编写验收测试用例。",
     "输出一个 JSON 数组，每个元素包含字段：id（如 TC-01）、title、precondition、steps（字符串数组）、expected。",
     "用例要覆盖正常路径、边界条件和异常路径，通常 4-8 条。只输出 JSON 数组，不要输出其他任何内容。",
     "",

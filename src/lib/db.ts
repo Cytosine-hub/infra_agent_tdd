@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import fs from "node:fs";
 import type { Repo, Requirement, RequirementEvent, TestCase, User } from "./types";
+import { DEFAULT_PASSWORD, hashPassword, verifyPassword } from "./password";
 
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
 
@@ -18,7 +19,8 @@ export function db(): DatabaseSync {
       username TEXT NOT NULL UNIQUE,
       display_name TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'member',
-      team TEXT NOT NULL DEFAULT ''
+      team TEXT NOT NULL DEFAULT '',
+      password_hash TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS requirements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +102,15 @@ function migrate(d: DatabaseSync) {
     d.exec("ALTER TABLE users ADD COLUMN provider TEXT NOT NULL DEFAULT 'local'");
     d.exec("ALTER TABLE users ADD COLUMN provider_login TEXT NOT NULL DEFAULT ''");
   }
+  // 老库补密码列，并给已有内置账号设默认密码（第三方账号不设，走 OAuth）
+  if (!ucols.some((c) => c.name === "password_hash")) {
+    d.exec("ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''");
+    const locals = d
+      .prepare("SELECT id FROM users WHERE provider = 'local' AND password_hash = ''")
+      .all() as { id: number }[];
+    const upd = d.prepare("UPDATE users SET password_hash = ? WHERE id = ?");
+    for (const u of locals) upd.run(hashPassword(DEFAULT_PASSWORD), u.id);
+  }
   const tcols = d.prepare("PRAGMA table_info(agent_tasks)").all() as { name: string }[];
   if (tcols.length > 0 && !tcols.some((c) => c.name === "model")) {
     d.exec("ALTER TABLE agent_tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''");
@@ -146,15 +157,16 @@ function seedUsers(d: DatabaseSync) {
   const count = d.prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number };
   if (count.c > 0) return;
   const ins = d.prepare(
-    "INSERT INTO users (username, display_name, role, team) VALUES (?, ?, ?, ?)"
+    "INSERT INTO users (username, display_name, role, team, password_hash) VALUES (?, ?, ?, ?, ?)"
   );
-  ins.run("admin", "平台管理员", "admin", "平台");
-  ins.run("db_lead", "数据库组组长", "lead", "数据库组");
-  ins.run("db_member", "数据库组组员", "member", "数据库组");
-  ins.run("mw_lead", "中间件组组长", "lead", "中间件组");
-  ins.run("mw_member", "中间件组组员", "member", "中间件组");
-  ins.run("host_lead", "主机组组长", "lead", "主机组");
-  ins.run("net_lead", "网络组组长", "lead", "网络组");
+  const pw = () => hashPassword(DEFAULT_PASSWORD);
+  ins.run("admin", "平台管理员", "admin", "平台", pw());
+  ins.run("db_lead", "数据库组组长", "lead", "数据库组", pw());
+  ins.run("db_member", "数据库组组员", "member", "数据库组", pw());
+  ins.run("mw_lead", "中间件组组长", "lead", "中间件组", pw());
+  ins.run("mw_member", "中间件组组员", "member", "中间件组", pw());
+  ins.run("host_lead", "主机组组长", "lead", "主机组", pw());
+  ins.run("net_lead", "网络组组长", "lead", "网络组", pw());
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -596,20 +608,39 @@ export function addUser(input: {
   team: string;
   provider?: string;
   providerLogin?: string;
+  password?: string; // 内置账号初始密码；OAuth 账号可不填
 }): User {
+  const provider = input.provider ?? "local";
+  const passwordHash =
+    provider === "local" ? hashPassword(input.password || DEFAULT_PASSWORD) : "";
   db()
     .prepare(
-      "INSERT INTO users (username, display_name, role, team, provider, provider_login) VALUES (?, ?, ?, ?, ?, ?)"
+      "INSERT INTO users (username, display_name, role, team, provider, provider_login, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       input.username,
       input.displayName,
       input.role,
       input.team,
-      input.provider ?? "local",
-      input.providerLogin ?? ""
+      provider,
+      input.providerLogin ?? "",
+      passwordHash
     );
   return getUser(input.username)!;
+}
+
+// 账密校验：仅内置账号；成功返回用户，失败返回 null
+export function verifyLogin(username: string, password: string): User | null {
+  const r = db().prepare("SELECT * FROM users WHERE username = ?").get(username) as any;
+  if (!r || (r.provider ?? "local") !== "local") return null;
+  if (!verifyPassword(password, r.password_hash ?? "")) return null;
+  return rowToUser(r);
+}
+
+export function setUserPassword(id: number, password: string) {
+  db()
+    .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+    .run(hashPassword(password), id);
 }
 
 export function updateUser(

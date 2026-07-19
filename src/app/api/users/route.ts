@@ -7,6 +7,7 @@ import {
   getUser,
   getUserById,
   listUsers,
+  setUserPassword,
   teamExists,
   updateUser,
 } from "@/lib/db";
@@ -27,6 +28,7 @@ const AddSchema = z.object({
   displayName: z.string().min(1, "显示名不能为空").max(32),
   role: z.enum(["member", "lead", "admin"]),
   team: z.string().min(1, "必须填写小组"),
+  password: z.string().min(6, "初始密码至少 6 位").max(64).optional(),
 });
 
 export const POST = apiHandler(async (req: NextRequest) => {
@@ -48,12 +50,13 @@ const PatchSchema = z.object({
   displayName: z.string().min(1).max(32).optional(),
   role: z.enum(["member", "lead", "admin"]).optional(),
   team: z.string().min(1).optional(),
+  password: z.string().min(6, "密码至少 6 位").max(64).optional(),
 });
 
 export const PATCH = apiHandler(async (req: NextRequest) => {
   const actor = await requireUser();
   const parsed = PatchSchema.safeParse(await req.json());
-  if (!parsed.success) return badRequest("请求参数错误");
+  if (!parsed.success) return badRequest(parsed.error.issues.map((i) => i.message).join("；"));
   const target = getUserById(parsed.data.id);
   if (!target) return badRequest("用户不存在");
   if (
@@ -68,6 +71,10 @@ export const PATCH = apiHandler(async (req: NextRequest) => {
       ? canChangeRole(actor, target, parsed.data.role as Role, countAdmins())
       : canManageUsers(actor);
   if (denied) return forbidden(denied);
+  if (parsed.data.password !== undefined) {
+    if (target.provider !== "local") return badRequest("第三方账号不能设置密码");
+    setUserPassword(parsed.data.id, parsed.data.password);
+  }
   updateUser(parsed.data.id, parsed.data);
   return NextResponse.json({ user: getUserById(parsed.data.id) });
 });

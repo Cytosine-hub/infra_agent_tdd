@@ -17,6 +17,7 @@ export default function UsersManager() {
     displayName: "",
     role: "member",
     team: UNASSIGNED,
+    password: "",
   });
 
   function load() {
@@ -59,7 +60,7 @@ export default function UsersManager() {
         onSubmit={async (e) => {
           e.preventDefault();
           if (await call("POST", form)) {
-            setForm({ username: "", displayName: "", role: "member", team: UNASSIGNED });
+            setForm({ username: "", displayName: "", role: "member", team: UNASSIGNED, password: "" });
           }
         }}
         className="card flex flex-wrap items-end gap-3 p-5"
@@ -111,6 +112,16 @@ export default function UsersManager() {
               </option>
             ))}
           </select>
+        </div>
+        <div className="w-32">
+          <label className="label">初始密码</label>
+          <input
+            className="input"
+            type="text"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            placeholder="默认 portal123"
+          />
         </div>
         <button className="btn-primary" disabled={busy}>
           添加账号
@@ -174,7 +185,19 @@ export default function UsersManager() {
                     ))}
                   </select>
                 </td>
-                <td className="px-3 py-2.5 text-right">
+                <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                  {u.provider === "local" && (
+                    <button
+                      className="mr-3 text-xs text-zinc-500 hover:underline disabled:opacity-40"
+                      disabled={busy}
+                      onClick={() => {
+                        const pw = window.prompt(`为「${u.displayName}」设置新密码（至少 6 位）：`);
+                        if (pw) call("PATCH", { id: u.id, password: pw });
+                      }}
+                    >
+                      重置密码
+                    </button>
+                  )}
                   <button
                     className="text-xs text-red-500 hover:underline disabled:opacity-40"
                     disabled={busy}

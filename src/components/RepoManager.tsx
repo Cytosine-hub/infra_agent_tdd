@@ -102,7 +102,7 @@ export default function RepoManager() {
             className="input"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="例如：运维门户主站"
+            placeholder="例如：集成中心主站"
           />
         </div>
         <div className="w-36">
