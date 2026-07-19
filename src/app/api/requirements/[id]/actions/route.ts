@@ -88,10 +88,18 @@ export const POST = apiHandler(
     if (denied) return forbidden(denied);
 
     switch (action) {
-      case "approve_requirement":
+      case "approve_requirement": {
         updateRequirement(id, { status: "requirement_approved", rejectReason: null });
         addEvent(id, "requirement_approved", user.username, "需求审核通过");
+        // 审核通过即自动入队生成测试用例（无需再手动点击）
+        try {
+          const t = enqueueTestcaseTask(id);
+          addEvent(id, "testcase_task_enqueued", "system", `审核通过，自动生成测试用例（${t.engine}）`);
+        } catch (e) {
+          console.error("自动生成用例入队失败:", e);
+        }
         break;
+      }
 
       case "reject_requirement":
         updateRequirement(id, { status: "requirement_rejected", rejectReason: reason ?? "" });

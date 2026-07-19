@@ -27,13 +27,16 @@ export default function NewRequirementPage() {
         setRepos(list);
         if (list.length > 0) setForm((f) => ({ ...f, repo: f.repo || list[0].fullName }));
       });
-    fetch("/api/teams")
-      .then((r) => r.json())
-      .then((d) => {
-        const names: string[] = (d.teams ?? []).map((t: { name: string }) => t.name);
-        setTeams(names);
-        if (names.length > 0) setForm((f) => ({ ...f, team: f.team || names[0] }));
-      });
+    // 默认小组 = 当前用户所属小组（管理员无所属组则留空，强制选择）
+    Promise.all([
+      fetch("/api/teams").then((r) => r.json()),
+      fetch("/api/me").then((r) => (r.ok ? r.json() : { user: null })),
+    ]).then(([t, m]) => {
+      const names: string[] = (t.teams ?? []).map((x: { name: string }) => x.name);
+      setTeams(names);
+      const myTeam: string = m.user?.role !== "admin" && names.includes(m.user?.team) ? m.user.team : "";
+      setForm((f) => ({ ...f, team: f.team || myTeam }));
+    });
   }, []);
 
   async function submit(e: React.FormEvent) {
@@ -82,6 +85,9 @@ export default function NewRequirementPage() {
               onChange={(e) => setForm({ ...form, team: e.target.value })}
               required
             >
+              <option value="" disabled>
+                请选择小组
+              </option>
               {teams.map((t) => (
                 <option key={t} value={t}>
                   {t}

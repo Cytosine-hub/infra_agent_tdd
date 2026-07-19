@@ -148,7 +148,10 @@ function assertNoActiveTask(requirementId: number, kind: "develop" | "review" | 
   const last = latestAgentTask(requirementId, kind);
   if (
     last &&
-    (last.status === "queued" || (last.status === "running" && pidAlive(last.pid)))
+    // running 且（无子进程 pid，即 runner 进程内跑，如用例生成 / 子进程仍存活）→ 视为活跃。
+    // 崩溃残留的 running 任务由 runner 启动时 failStaleRunningTasks(pidAlive) 清理。
+    (last.status === "queued" ||
+      (last.status === "running" && (last.pid == null || pidAlive(last.pid))))
   ) {
     throw new Error(`该需求已有排队/进行中的${kind === "develop" ? "开发" : kind === "review" ? "审查" : "用例生成"}任务（#${last.id}）`);
   }

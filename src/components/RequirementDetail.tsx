@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Requirement, RequirementEvent, TestCase, User } from "@/lib/types";
 import StatusBadge from "@/components/StatusBadge";
 import AgentRuns from "@/components/AgentRuns";
@@ -37,6 +37,7 @@ export default function RequirementDetail({
   const [editing, setEditing] = useState(false);
   const [draftCases, setDraftCases] = useState<TestCase[]>([]);
   const [evaluating, setEvaluating] = useState(false);
+  const [genActive, setGenActive] = useState(false); // 用例生成任务进行中
 
   // 后台任务完成后刷新需求与时间线（useCallback 保持引用稳定，避免子组件轮询抖动）
   const refresh = useCallback(async () => {
@@ -47,6 +48,34 @@ export default function RequirementDetail({
       setEvents(data.events);
     }
   }, [initialRequirement.id]);
+
+  // 用例生成是异步任务：轮询其状态，生成中禁用按钮、完成后刷新
+  const genPrev = useRef(false);
+  useEffect(() => {
+    const watching = ["requirement_approved", "testcases_generated", "testcases_rejected"].includes(
+      req.status
+    );
+    if (!watching) return; // 非该阶段不轮询（生成按钮也不渲染，genActive 残留无影响）
+    let stop = false;
+    const poll = () => {
+      fetch(`/api/requirements/${initialRequirement.id}/agent-task`)
+        .then((r) => (r.ok ? r.json() : { testcases: null }))
+        .then((d) => {
+          if (stop) return;
+          const t = d.testcases;
+          const active = !!t && (t.status === "queued" || t.status === "running");
+          setGenActive(active);
+          if (genPrev.current && !active) refresh(); // 刚结束 → 拉新状态/用例
+          genPrev.current = active;
+        });
+    };
+    poll();
+    const timer = setInterval(poll, 4000);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+    };
+  }, [req.status, initialRequirement.id, refresh]);
 
   async function evaluatePlan(): Promise<ExecPlan | null> {
     setEvaluating(true);
@@ -311,8 +340,10 @@ export default function RequirementDetail({
 
             {(req.status === "requirement_approved" || req.status === "testcases_rejected") && (
               <ActionButton
-                label={busy === "generate_tests" ? "AI 生成中…" : "🤖 生成测试用例"}
-                busy={busy === "generate_tests"}
+                label={
+                  genActive || busy === "generate_tests" ? "🤖 测试用例生成中…" : "🤖 生成测试用例"
+                }
+                busy={genActive || busy === "generate_tests"}
                 onClick={() => act("generate_tests")}
               />
             )}
@@ -328,10 +359,10 @@ export default function RequirementDetail({
                 )}
                 <button
                   className="btn-secondary"
-                  disabled={busy !== null}
+                  disabled={busy !== null || genActive}
                   onClick={() => act("generate_tests")}
                 >
-                  🔄 重新生成
+                  {genActive ? "生成中…" : "🔄 重新生成"}
                 </button>
                 {(isLead || isRequester) && (
                   <button
