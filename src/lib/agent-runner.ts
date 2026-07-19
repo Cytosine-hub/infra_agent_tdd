@@ -322,6 +322,8 @@ async function runTask(taskId: number) {
       });
       child.on("exit", (code) => {
         clearTimeout(timer);
+        // 子进程已退出：立即清 pid，避免后续 verify/push 步骤被 pid 探活误判为中断
+        updateAgentTask(task.id, { pid: null });
         code === 0 ? resolve() : reject(new Error(`${task.engine} 退出码 ${code}`));
       });
     });
@@ -532,11 +534,12 @@ async function runReviewTask(taskId: number) {
           reject(new Error("审查超时"));
         }, TIMEOUT_MS);
         child.on("error", (e) => (clearTimeout(timer), reject(e)));
-        child.on("exit", (code) =>
-          code === 0
-            ? (clearTimeout(timer), resolve())
-            : (clearTimeout(timer), reject(new Error(`codex 退出码 ${code}`)))
-        );
+        child.on("exit", (code) => {
+          clearTimeout(timer);
+          // 子进程已退出：清 pid，避免 comment 步骤被 pid 探活误判为中断
+          updateAgentTask(task.id, { pid: null });
+          code === 0 ? resolve() : reject(new Error(`codex 退出码 ${code}`));
+        });
       });
       result = fs.readFileSync(outFile, "utf-8");
       fs.rmSync(outFile, { force: true });
