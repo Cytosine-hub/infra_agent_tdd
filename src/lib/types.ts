@@ -112,6 +112,10 @@ export interface Requirement {
   // AI 安全门审：'' 未审 / approved 通过 / rejected 拒绝（拒绝后所有 Agent 任务不执行）
   guardStatus: "" | "approved" | "rejected";
   guardReason: string;
+  // PR 审查闭环：结论 + 意见 + 已自动修复轮次
+  reviewVerdict: "" | "approved" | "changes";
+  reviewFeedback: string;
+  fixRounds: number;
   createdAt: string;
   updatedAt: string;
 }

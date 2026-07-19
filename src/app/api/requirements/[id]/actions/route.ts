@@ -154,6 +154,10 @@ export const POST = apiHandler(
           githubIssueNumber: issueNumber,
           githubIssueUrl: issueUrl,
           branch,
+          // 新的开发周期：重置审查闭环状态
+          reviewVerdict: "",
+          reviewFeedback: "",
+          fixRounds: 0,
         });
         addEvent(id, "dev_started", user.username, `已创建 Issue #${issueNumber}，分支 ${branch}`);
         // 记录最终采用的执行方案（可能被人工修改过），并调度本地 Agent

@@ -30,6 +30,7 @@ const STEP_LABELS: Record<string, string> = {
   index: "建代码索引",
   generate: "生成用例",
   develop: "编码中",
+  fix: "按审查修复",
   verify: "测试校验",
   push: "推送分支",
   pull_request: "创建 PR",

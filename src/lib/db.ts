@@ -136,6 +136,11 @@ function migrate(d: DatabaseSync) {
     d.exec("ALTER TABLE requirements ADD COLUMN guard_status TEXT NOT NULL DEFAULT ''");
     d.exec("ALTER TABLE requirements ADD COLUMN guard_reason TEXT NOT NULL DEFAULT ''");
   }
+  if (!rcols.some((c) => c.name === "review_verdict")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN review_verdict TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE requirements ADD COLUMN review_feedback TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE requirements ADD COLUMN fix_rounds INTEGER NOT NULL DEFAULT 0");
+  }
   const pcols = d.prepare("PRAGMA table_info(repos)").all() as { name: string }[];
   if (pcols.length > 0 && !pcols.some((c) => c.name === "team")) {
     d.exec("ALTER TABLE repos ADD COLUMN team TEXT NOT NULL DEFAULT ''");
@@ -201,6 +206,9 @@ function rowToRequirement(r: any): Requirement {
     execPlan: r.exec_plan ? JSON.parse(r.exec_plan) : null,
     guardStatus: r.guard_status ?? "",
     guardReason: r.guard_reason ?? "",
+    reviewVerdict: r.review_verdict ?? "",
+    reviewFeedback: r.review_feedback ?? "",
+    fixRounds: r.fix_rounds ?? 0,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -259,6 +267,9 @@ export function updateRequirement(id: number, patch: Record<string, unknown>) {
     execPlan: "exec_plan",
     guardStatus: "guard_status",
     guardReason: "guard_reason",
+    reviewVerdict: "review_verdict",
+    reviewFeedback: "review_feedback",
+    fixRounds: "fix_rounds",
   };
   const sets: string[] = [];
   const vals: unknown[] = [];

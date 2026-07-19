@@ -15,6 +15,7 @@ const STEP_LABELS: Record<string, string> = {
   clone: "拉取代码",
   index: "建代码索引",
   develop: "Agent 开发中",
+  fix: "按审查意见修复",
   verify: "运行测试校验",
   push: "推送分支",
   pull_request: "创建 PR",

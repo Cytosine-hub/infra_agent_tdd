@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { effectiveTaskStatus } from "../agent-runner";
+import { effectiveTaskStatus, parseReviewVerdict } from "../agent-runner";
+
+describe("parseReviewVerdict", () => {
+  it("识别建议合并 / 建议修改", () => {
+    expect(parseReviewVerdict("✅ 建议合并\n无问题")).toBe("approved");
+    expect(parseReviewVerdict("⚠️ 建议修改\n- 某处有问题")).toBe("changes");
+  });
+  it("建议修改优先于其它（首行判定）", () => {
+    expect(parseReviewVerdict("⚠️ 建议修改\n虽然大部分可以合并，但…")).toBe("changes");
+  });
+  it("无法识别返回空", () => {
+    expect(parseReviewVerdict("这是一段无关的话")).toBe("");
+  });
+});
 
 describe("effectiveTaskStatus", () => {
   it("终态原样返回", () => {

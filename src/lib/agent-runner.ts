@@ -103,6 +103,20 @@ export async function availableEngines(): Promise<string[]> {
 }
 
 const TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MIN ?? 30) * 60_000;
+const MAX_FIX_ROUNDS = Number(process.env.AGENT_MAX_FIX_ROUNDS ?? 3);
+const AUTO_FIX = process.env.AGENT_AUTO_FIX !== "0";
+
+// 解析审查结论：首个有意义行含"建议合并"→approved；含"建议修改"→changes
+export function parseReviewVerdict(result: string): "approved" | "changes" | "" {
+  const head = (result || "").split(/\r?\n/).find((l) => l.trim())?.trim() ?? "";
+  const scope = head || result;
+  if (/建议修改|需要修改|不建议合并/.test(scope)) return "changes";
+  if (/建议合并|通过|可以合并|approve/i.test(scope)) return "approved";
+  // 兜底：全文里找
+  if (/建议修改|需要修改/.test(result)) return "changes";
+  if (/建议合并/.test(result)) return "approved";
+  return "";
+}
 
 // codegraph 代码智能：为 agent 提示引导使用（索引复用逻辑见 repo-index.ts）
 function codegraphHint(indexed: boolean): string {
@@ -118,9 +132,12 @@ function codegraphHint(indexed: boolean): string {
   ].join("\n");
 }
 
-function buildPrompt(req: Requirement, codegraph = ""): string {
+function buildPrompt(req: Requirement, codegraph = "", fixFeedback = ""): string {
+  const fixMode = !!fixFeedback;
   return [
-    `你是自动化开发 Agent，请在当前仓库工作区内完成以下需求的开发。`,
+    fixMode
+      ? `你是自动化开发 Agent。当前分支上已有实现，但代码审查提出了修改意见，请针对意见修改现有代码。`
+      : `你是自动化开发 Agent，请在当前仓库工作区内完成以下需求的开发。`,
     ``,
     `# 需求（门户需求 #${req.id} · GitHub Issue #${req.githubIssueNumber}）`,
     ``,
@@ -132,9 +149,13 @@ function buildPrompt(req: Requirement, codegraph = ""): string {
     `## 验收测试用例（必须全部满足）`,
     testCasesToMarkdown(req.testCases ?? []),
     ``,
+    fixMode ? `## ⚠️ 上一轮代码审查意见（请逐条修改解决）\n${fixFeedback}` : ``,
+    ``,
     `# 工作要求`,
     `1. 先完整阅读仓库根目录 agent.md 并严格遵循其中的开发规范。`,
-    `2. 当前已处于开发分支 ${req.branch}，不要切换分支、不要推送、不要创建 PR（由平台完成）。`,
+    fixMode
+      ? `2. 当前分支 ${req.branch} 已检出既有实现，请在其基础上**针对上述审查意见逐条修改**，不要推倒重来、不要切换分支、不要推送/建 PR（由平台完成）。`
+      : `2. 当前已处于开发分支 ${req.branch}，不要切换分支、不要推送、不要创建 PR（由平台完成）。`,
     `3. 测试先行：先把每条验收测试用例转成自动化测试（测试名注明用例编号，如 TC-01），再实现功能。`,
     `4. 运行仓库完整测试套件，确保全部通过且无回归。`,
     `5. 完成后用中文提交（git commit），提交信息格式遵循 agent.md，引用 Issue 编号 #${req.githubIssueNumber}。`,
@@ -251,15 +272,24 @@ async function runTask(taskId: number) {
     await ensureGuardApproved(req.id); // 防滥用门审
     updateAgentTask(task.id, { step: "clone" });
 
+    // 修复迭代模式：已有 PR + 审查意见 → 在既有分支上改，而非从 main 重做
+    const fixFeedback = req.prNumber && req.reviewVerdict === "changes" ? req.reviewFeedback : "";
+    const isFix = !!fixFeedback;
+
     // 1. 独立工作区 clone + 分支
-    logLine(`clone ${req.repo}`);
+    logLine(`clone ${req.repo}${isFix ? "（修复迭代，基于既有分支）" : ""}`);
     fs.rmSync(workspace, { recursive: true, force: true });
     await sh(wsRoot, log, "git", ["clone", "--depth", "20", cloneUrl(req.repo), workspace]);
-    logLine(`checkout ${req.branch}`);
-    // 分支可能已存在（重试场景）：优先复用远程分支
-    await sh(workspace, log, "git", ["checkout", "-B", branch]).catch(async () => {
-      await sh(workspace, log, "git", ["checkout", branch]);
-    });
+    if (isFix) {
+      // 复用远程分支的既有实现
+      await sh(workspace, log, "git", ["fetch", "origin", branch]);
+      await sh(workspace, log, "git", ["checkout", "-B", branch, `origin/${branch}`]);
+    } else {
+      logLine(`checkout ${req.branch}`);
+      await sh(workspace, log, "git", ["checkout", "-B", branch]).catch(async () => {
+        await sh(workspace, log, "git", ["checkout", branch]);
+      });
+    }
 
     // 2. 建 codegraph 索引（best-effort），供 agent 探查代码
     let cgHint = "";
@@ -276,10 +306,10 @@ async function runTask(taskId: number) {
       model: task.model || undefined,
       effort: (task.effort || undefined) as Effort | undefined,
     };
-    updateAgentTask(task.id, { step: "develop" });
-    logLine(`run ${task.engine} (model=${task.model || "默认"}, effort=${task.effort || "默认"})`);
+    updateAgentTask(task.id, { step: isFix ? "fix" : "develop" });
+    logLine(`run ${task.engine}${isFix ? " [修复迭代]" : ""} (model=${task.model || "默认"}, effort=${task.effort || "默认"})`);
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(engine.cmd, engine.args(buildPrompt(req, cgHint), opts), {
+      const child = spawn(engine.cmd, engine.args(buildPrompt(req, cgHint, fixFeedback), opts), {
         cwd: workspace,
         env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN, ...engine.env(opts) },
         stdio: ["ignore", log, log],
@@ -317,15 +347,16 @@ async function runTask(taskId: number) {
       "commit", "-m", `feat: ${req.title} (#${req.githubIssueNumber})`,
     ]).catch(() => {/* 无未提交变更时忽略 */});
 
-    // 确认相对目标仓库默认分支有实际提交（默认分支可能是 main/master/其它）
+    // 确认有实际新提交。基准：初次开发对比默认分支；修复迭代对比既有分支（否则总判为有提交）
     const baseBranch = await getDefaultBranch(req.repo);
-    await sh(workspace, log, "git", ["fetch", "origin", baseBranch]);
-    const { stdout } = await execFileP(
-      "git",
-      ["rev-list", "--count", `origin/${baseBranch}..HEAD`],
-      { cwd: workspace }
-    );
-    if (Number(stdout.trim()) === 0) throw new Error("Agent 未产生任何提交");
+    const commitBase = isFix ? `origin/${branch}` : `origin/${baseBranch}`;
+    if (!isFix) await sh(workspace, log, "git", ["fetch", "origin", baseBranch]);
+    const { stdout } = await execFileP("git", ["rev-list", "--count", `${commitBase}..HEAD`], {
+      cwd: workspace,
+    });
+    if (Number(stdout.trim()) === 0) {
+      throw new Error(isFix ? "修复迭代未产生新提交（未按审查意见修改）" : "Agent 未产生任何提交");
+    }
 
     // 5. push + 建 PR
     updateAgentTask(task.id, { step: "push" });
@@ -542,8 +573,49 @@ async function runReviewTask(taskId: number) {
       pid: null,
       result: result.slice(0, 4000),
     });
-    addEvent(req.id, "review_done", "system", `审查完成，建议已评论到 PR #${req.prNumber}`);
-    logLine("review done");
+
+    // 解析结论并驱动闭环：建议修改 → 自动把意见喂回编码 agent 修改，直到通过或达上限
+    const verdict = parseReviewVerdict(result);
+    updateRequirement(req.id, { reviewVerdict: verdict, reviewFeedback: result.slice(0, 6000) });
+    addEvent(
+      req.id,
+      "review_done",
+      "system",
+      `审查完成（${verdict === "approved" ? "建议合并" : verdict === "changes" ? "建议修改" : "结论未识别"}），已评论到 PR #${req.prNumber}`
+    );
+    logLine(`review done: ${verdict}`);
+
+    if (verdict === "changes") {
+      const cur = getRequirement(req.id)!;
+      if (AUTO_FIX && cur.fixRounds < MAX_FIX_ROUNDS) {
+        const round = cur.fixRounds + 1;
+        updateRequirement(req.id, { fixRounds: round });
+        try {
+          // 修复沿用需求原执行方案（引擎/模型/强度）
+          const plan = cur.execPlan;
+          const engine = plan?.engine ?? process.env.AGENT_ENGINE ?? "claude";
+          const t = enqueueDevTask(req.id, ENGINES[engine] ? engine : "claude", {
+            model: plan?.model,
+            effort: plan?.effort as Effort | undefined,
+          });
+          addEvent(
+            req.id,
+            "fix_enqueued",
+            "system",
+            `审查建议修改，自动触发第 ${round}/${MAX_FIX_ROUNDS} 轮修复（${t.engine}）`
+          );
+        } catch (e) {
+          console.error("自动修复入队失败:", e);
+        }
+      } else {
+        addEvent(
+          req.id,
+          "fix_maxed",
+          "system",
+          `审查仍建议修改，已达最大自动修复轮次（${MAX_FIX_ROUNDS}），请人工处理`
+        );
+      }
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     updateAgentTask(task.id, { status: "failed", error: message, pid: null });
