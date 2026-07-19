@@ -195,6 +195,18 @@ export async function executeTask(taskId: number): Promise<void> {
   }
 }
 
+// 任务的“有效状态”：running 但（子进程已死 或 执行器离线）→ 判为中断失败。
+// 覆盖两类情况：有子进程 pid 的开发/审查任务崩溃；runner 进程内跑的用例生成任务在 runner 宕机时。
+export function effectiveTaskStatus(
+  task: { status: string; pid: number | null },
+  runnerOnline: boolean
+): { status: string; interrupted: boolean } {
+  if (task.status !== "running") return { status: task.status, interrupted: false };
+  const subprocDead = task.pid != null && !pidAlive(task.pid);
+  if (subprocDead || !runnerOnline) return { status: "failed", interrupted: true };
+  return { status: "running", interrupted: false };
+}
+
 export function pidAlive(pid: number | null): boolean {
   if (!pid) return false;
   try {

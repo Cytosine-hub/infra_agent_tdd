@@ -18,8 +18,37 @@ const STEP_LABELS: Record<string, string> = {
   verify: "运行测试校验",
   push: "推送分支",
   pull_request: "创建 PR",
+  comment: "回写评论",
+  review: "审查中",
+  generate: "生成用例",
   done: "完成",
 };
+
+function beatAgo(beatAt: string): string {
+  const t = Number(beatAt);
+  if (!t) return "";
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  return s < 60 ? `${s} 秒前` : `${Math.round(s / 60)} 分钟前`;
+}
+
+// 运行中任务的“最新进度”行：滚动展示 agent/执行的最近一条输出
+function LiveProgress({ task, text }: { task: AgentTaskRow; text: string }) {
+  if (task.status !== "running") return null;
+  return (
+    <div className="mt-2 rounded-lg border border-sky-100 bg-sky-50/60 px-3 py-2">
+      <div className="flex items-center gap-2 text-[11px] text-sky-700">
+        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+        {STEP_LABELS[task.step] ?? task.step ?? "运行中"}
+        {task.beatAt && <span className="text-sky-400">· 最后活动 {beatAgo(task.beatAt)}</span>}
+      </div>
+      {text && (
+        <div className="mt-1 truncate font-mono text-[11px] text-zinc-600" title={text}>
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 本地 Agent（claude/codex CLI）任务监控：状态、当前步骤、实时日志
 export default function LocalAgentTask({
@@ -43,6 +72,9 @@ export default function LocalAgentTask({
   const [review, setReview] = useState<AgentTaskRow | null>(null);
   const [testcases, setTestcases] = useState<AgentTaskRow | null>(null);
   const [log, setLog] = useState("");
+  const [progress, setProgress] = useState("");
+  const [reviewProgress, setReviewProgress] = useState("");
+  const [runnerOnline, setRunnerOnline] = useState(true);
   const [showLog, setShowLog] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
   const prevActive = useRef<string>("");
@@ -55,6 +87,9 @@ export default function LocalAgentTask({
         setReview(d.review ?? null);
         setTestcases(d.testcases ?? null);
         setLog(d.log);
+        setProgress(d.progress ?? "");
+        setReviewProgress(d.reviewProgress ?? "");
+        setRunnerOnline(d.runnerOnline !== false);
         // 任何任务从 排队/运行 变为终态 → 通知父组件刷新需求（用例已写入/状态已流转）
         const active = [d.task, d.review, d.testcases]
           .filter((t) => t && (t.status === "queued" || t.status === "running"))
@@ -79,6 +114,12 @@ export default function LocalAgentTask({
 
   return (
     <section className="card mt-5 p-5">
+      {!runnerOnline && (
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          ⚠️ 执行器（runner）离线，任务不会推进。请在服务器上启动 <code>npm run runner</code>。
+        </div>
+      )}
+
       {/* 用例生成任务 */}
       {testcases && (
         <div className={task ? "mb-4 border-b border-zinc-100 pb-4" : ""}>
@@ -95,6 +136,7 @@ export default function LocalAgentTask({
               {(STATUS_STYLE[testcases.status] ?? STATUS_STYLE.queued).label}
             </span>
           </div>
+          <LiveProgress task={testcases} text={progress} />
           {testcases.result && (
             <p className="mt-1.5 text-xs text-zinc-500">{testcases.result}</p>
           )}
@@ -128,6 +170,8 @@ export default function LocalAgentTask({
           {task.status === "running" && task.step && ` · ${STEP_LABELS[task.step] ?? task.step}`}
         </span>
       </div>
+
+      <LiveProgress task={task} text={progress} />
 
       {task.status === "failed" && (
         <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -194,6 +238,7 @@ export default function LocalAgentTask({
               )}
             </div>
           </div>
+          {review && <LiveProgress task={review} text={reviewProgress} />}
           {review?.status === "failed" && (
             <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
               {review.error ?? "审查失败"}

@@ -4,6 +4,7 @@ import "./globals.css";
 import { currentUser } from "@/lib/session";
 import { ROLE_LABELS } from "@/lib/types";
 import LogoutButton from "@/components/LogoutButton";
+import RunnerStatus from "@/components/RunnerStatus";
 
 export const metadata: Metadata = {
   title: "集成中心需求交付门户",
@@ -40,6 +41,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </div>
             {user ? (
               <div className="flex items-center gap-3 text-sm">
+                <RunnerStatus />
                 <span className="text-zinc-600">
                   {user.displayName}
                   <span className="ml-1.5 rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500">

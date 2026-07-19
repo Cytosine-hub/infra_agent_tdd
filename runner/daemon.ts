@@ -16,7 +16,13 @@ for (const file of [".env.local", ".env"]) {
   }
 }
 
-import { claimNextPendingRepo, claimNextQueuedTask, failStaleRunningTasks } from "../src/lib/db";
+import {
+  claimNextPendingRepo,
+  claimNextQueuedTask,
+  failStaleRunningTasks,
+  resetStuckOnboarding,
+  runnerBeat,
+} from "../src/lib/db";
 import { executeTask, pidAlive } from "../src/lib/agent-runner";
 import { runRepoOnboard } from "../src/lib/onboard";
 
@@ -26,7 +32,15 @@ let stopping = false;
 async function main() {
   const stale = failStaleRunningTasks(pidAlive);
   if (stale > 0) console.log(`[runner] 启动恢复：${stale} 个中断任务已标记失败（可在门户重触发）`);
-  console.log(`[runner] agent runner 已启动，轮询间隔 ${POLL_MS}ms`);
+  const stuck = resetStuckOnboarding();
+  if (stuck > 0) console.log(`[runner] 启动恢复：${stuck} 个卡住的入驻已重新入队`);
+
+  // 心跳：每 5 秒刷新，即使某任务的子进程在等待也照常跳动（事件循环不被阻塞）。
+  // runner 一旦宕机心跳即冻结，前端据此判定执行器离线。
+  runnerBeat(Date.now());
+  const heartbeat = setInterval(() => runnerBeat(Date.now()), 5000);
+
+  console.log(`[runner] agent runner 已启动，轮询间隔 ${POLL_MS}ms，心跳 5s`);
 
   while (!stopping) {
     // 优先处理仓库入驻（新加仓库须先建索引 + agent.md 才能开发）
@@ -53,6 +67,7 @@ async function main() {
       await new Promise((r) => setTimeout(r, POLL_MS));
     }
   }
+  clearInterval(heartbeat);
 }
 
 process.on("SIGTERM", () => (stopping = true));

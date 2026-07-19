@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // 运行时产物：SQLite、克隆的目标仓库镜像/工作区（含压缩 JS，勿 lint）
+    "data/**",
   ]),
 ]);
 

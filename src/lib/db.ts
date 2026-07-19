@@ -83,6 +83,10 @@ export function db(): DatabaseSync {
       detail TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL DEFAULT ''
+    );
   `);
   migrate(_db);
   seedUsers(_db);
@@ -120,6 +124,10 @@ function migrate(d: DatabaseSync) {
     d.exec("ALTER TABLE agent_tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'develop'");
     d.exec("ALTER TABLE agent_tasks ADD COLUMN result TEXT");
   }
+  if (tcols.length > 0 && !tcols.some((c) => c.name === "beat_at")) {
+    d.exec("ALTER TABLE agent_tasks ADD COLUMN beat_at TEXT NOT NULL DEFAULT ''");
+  }
+  d.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')");
   const rcols = d.prepare("PRAGMA table_info(requirements)").all() as { name: string }[];
   if (!rcols.some((c) => c.name === "exec_plan")) {
     d.exec("ALTER TABLE requirements ADD COLUMN exec_plan TEXT");
@@ -457,6 +465,7 @@ export interface AgentTaskRow {
   result: string | null;
   status: "queued" | "running" | "succeeded" | "failed";
   step: string;
+  beatAt: string; // 最近活性时间戳（epoch ms 字符串），由 runner 心跳刷新
   error: string | null;
   pid: number | null;
   logPath: string;
@@ -476,6 +485,7 @@ function rowToTask(r: any): AgentTaskRow {
     result: r.result,
     status: r.status,
     step: r.step,
+    beatAt: r.beat_at ?? "",
     error: r.error,
     pid: r.pid,
     logPath: r.log_path,
@@ -552,6 +562,41 @@ export function failStaleRunningTasks(isAlive: (pid: number | null) => boolean):
     }
   }
   return n;
+}
+
+/* ---------- runner 心跳与自愈 ---------- */
+
+const RUNNER_STALE_MS = 20_000; // 心跳超过此值判定执行器离线
+
+export function setMeta(key: string, value: string) {
+  db()
+    .prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+    .run(key, value, value);
+}
+export function getMeta(key: string): string | null {
+  const r = db().prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
+  return r ? r.value : null;
+}
+
+// runner 每隔几秒调用：刷新全局心跳 + 给所有 running 任务打活性戳
+export function runnerBeat(nowMs: number) {
+  setMeta("runner_beat", String(nowMs));
+  db().prepare("UPDATE agent_tasks SET beat_at = ? WHERE status = 'running'").run(String(nowMs));
+}
+
+export function runnerLastBeat(): number {
+  return Number(getMeta("runner_beat") ?? 0);
+}
+export function runnerOnline(nowMs: number): boolean {
+  return nowMs - runnerLastBeat() < RUNNER_STALE_MS;
+}
+
+// runner 启动自愈：把中途崩溃卡在 indexing 的仓库重新入队
+export function resetStuckOnboarding(): number {
+  const res = db()
+    .prepare("UPDATE repos SET onboard_status = 'pending', onboard_step = '' WHERE onboard_status = 'indexing'")
+    .run();
+  return Number(res.changes ?? 0);
 }
 
 export function updateAgentTask(
