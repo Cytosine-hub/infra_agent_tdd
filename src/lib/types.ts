@@ -71,6 +71,7 @@ export interface Repo {
   id: number;
   fullName: string; // owner/repo
   description: string;
+  team: string; // '' = 公共仓库；否则仅该小组成员可选用
 }
 
 // 启动开发前的执行方案（AI 评估 + 人工可改）

@@ -20,7 +20,7 @@ export default function NewRequirementPage() {
   });
 
   useEffect(() => {
-    fetch("/api/repos")
+    fetch("/api/repos?forUser=1")
       .then((r) => r.json())
       .then((d) => {
         const list: Repo[] = d.repos ?? [];

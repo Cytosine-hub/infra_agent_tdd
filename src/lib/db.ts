@@ -48,7 +48,8 @@ export function db(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS repos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL UNIQUE,
-      description TEXT NOT NULL DEFAULT ''
+      description TEXT NOT NULL DEFAULT '',
+      team TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS agent_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,6 +111,10 @@ function migrate(d: DatabaseSync) {
   if (!rcols.some((c) => c.name === "guard_status")) {
     d.exec("ALTER TABLE requirements ADD COLUMN guard_status TEXT NOT NULL DEFAULT ''");
     d.exec("ALTER TABLE requirements ADD COLUMN guard_reason TEXT NOT NULL DEFAULT ''");
+  }
+  const pcols = d.prepare("PRAGMA table_info(repos)").all() as { name: string }[];
+  if (pcols.length > 0 && !pcols.some((c) => c.name === "team")) {
+    d.exec("ALTER TABLE repos ADD COLUMN team TEXT NOT NULL DEFAULT ''");
   }
 }
 
@@ -309,17 +314,25 @@ export function repoExists(fullName: string): boolean {
   return Boolean(db().prepare("SELECT 1 FROM repos WHERE full_name = ?").get(fullName));
 }
 
-export function listRepos(): Repo[] {
-  const rows = db().prepare("SELECT * FROM repos ORDER BY full_name").all() as any[];
-  return rows.map((r) => ({ id: r.id, fullName: r.full_name, description: r.description }));
+function rowToRepo(r: any): Repo {
+  return { id: r.id, fullName: r.full_name, description: r.description, team: r.team ?? "" };
 }
 
-export function addRepo(fullName: string, description = ""): Repo {
-  db()
-    .prepare("INSERT OR IGNORE INTO repos (full_name, description) VALUES (?, ?)")
-    .run(fullName, description);
+export function listRepos(): Repo[] {
+  const rows = db().prepare("SELECT * FROM repos ORDER BY full_name").all() as any[];
+  return rows.map(rowToRepo);
+}
+
+export function getRepoByName(fullName: string): Repo | null {
   const r = db().prepare("SELECT * FROM repos WHERE full_name = ?").get(fullName) as any;
-  return { id: r.id, fullName: r.full_name, description: r.description };
+  return r ? rowToRepo(r) : null;
+}
+
+export function addRepo(fullName: string, description = "", team = ""): Repo {
+  db()
+    .prepare("INSERT OR IGNORE INTO repos (full_name, description, team) VALUES (?, ?, ?)")
+    .run(fullName, description, team);
+  return getRepoByName(fullName)!;
 }
 
 export function deleteRepo(id: number) {

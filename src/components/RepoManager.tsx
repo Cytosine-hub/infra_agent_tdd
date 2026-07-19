@@ -6,8 +6,10 @@ import type { Repo } from "@/lib/types";
 // 仓库管理：组长/管理员维护可绑定的目标仓库列表
 export default function RepoManager() {
   const [repos, setRepos] = useState<Repo[]>([]);
+  const [teams, setTeams] = useState<string[]>([]);
   const [fullName, setFullName] = useState("");
   const [description, setDescription] = useState("");
+  const [team, setTeam] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -15,6 +17,9 @@ export default function RepoManager() {
     fetch("/api/repos")
       .then((r) => (r.ok ? r.json() : { repos: [] }))
       .then((d) => setRepos(d.repos));
+    fetch("/api/teams")
+      .then((r) => (r.ok ? r.json() : { teams: [] }))
+      .then((d) => setTeams(d.teams.map((t: { name: string }) => t.name)));
   }
   useEffect(load, []);
 
@@ -25,7 +30,7 @@ export default function RepoManager() {
     const res = await fetch("/api/repos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fullName, description }),
+      body: JSON.stringify({ fullName, description, team }),
     });
     const data = await res.json();
     setBusy(false);
@@ -35,6 +40,7 @@ export default function RepoManager() {
     }
     setFullName("");
     setDescription("");
+    setTeam("");
     load();
   }
 
@@ -72,6 +78,17 @@ export default function RepoManager() {
             placeholder="例如：运维门户主站"
           />
         </div>
+        <div className="w-36">
+          <label className="label">归属</label>
+          <select className="input" value={team} onChange={(e) => setTeam(e.target.value)}>
+            <option value="">公共（全员可用）</option>
+            {teams.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
         <button className="btn-primary" disabled={busy}>
           添加
         </button>
@@ -92,7 +109,16 @@ export default function RepoManager() {
         {repos.map((r) => (
           <div key={r.id} className="flex items-center justify-between px-5 py-3.5">
             <div>
-              <div className="text-sm font-medium">{r.fullName}</div>
+              <div className="text-sm font-medium">
+                {r.fullName}
+                <span
+                  className={`ml-2 rounded-full px-2 py-0.5 text-[11px] ${
+                    r.team ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"
+                  }`}
+                >
+                  {r.team ? `${r.team}专属` : "公共"}
+                </span>
+              </div>
               {r.description && <div className="text-xs text-zinc-500">{r.description}</div>}
             </div>
             <button className="text-xs text-red-500 hover:underline" onClick={() => remove(r.id)}>

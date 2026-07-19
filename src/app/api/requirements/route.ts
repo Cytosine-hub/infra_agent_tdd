@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createRequirement, listRequirements, repoExists } from "@/lib/db";
+import { createRequirement, getRepoByName, listRequirements } from "@/lib/db";
+import { canUseRepo } from "@/lib/repo-access";
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest } from "@/lib/api";
 
@@ -26,9 +27,13 @@ export const POST = apiHandler(async (req: NextRequest) => {
     return badRequest(parsed.error.issues.map((i) => i.message).join("；"));
   }
   // 防滥用：仓库必须在系统「仓库管理」白名单内（执行侧还会再验一次）
-  if (!repoExists(parsed.data.repo)) {
+  const repo = getRepoByName(parsed.data.repo);
+  if (!repo) {
     return badRequest("目标仓库不在系统仓库列表中，请联系组长/管理员在「仓库管理」中添加");
   }
+  // 组属仓库仅本组成员可选用
+  const denied = canUseRepo(repo, user);
+  if (denied) return badRequest(denied);
   const requirement = createRequirement({ ...parsed.data, createdBy: user.username });
   return NextResponse.json({ requirement }, { status: 201 });
 });
