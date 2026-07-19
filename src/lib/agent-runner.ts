@@ -38,10 +38,25 @@ interface EngineDef {
   env: (opts: ExecOptions) => Record<string, string>;
 }
 
+// 模型清单可用环境变量覆盖（逗号分隔，第一个为默认），适配各家账号/网关开通的型号：
+//   AGENT_MODELS_CLAUDE=claude-sonnet-5,claude-opus-4-8
+//   AGENT_MODELS_CODEX=gpt-5.5,gpt-5.2-codex
+function modelsFromEnv(envKey: string, defaults: string[]): string[] {
+  const v = (process.env[envKey] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return v.length > 0 ? v : defaults;
+}
+
 export const ENGINES: Record<string, EngineDef> = {
   claude: {
     cmd: "claude",
-    models: ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
+    models: modelsFromEnv("AGENT_MODELS_CLAUDE", [
+      "claude-sonnet-5",
+      "claude-opus-4-8",
+      "claude-haiku-4-5-20251001",
+    ]),
     // -p 无头模式；权限跳过仅作用于隔离工作区
     args: (prompt, opts) => [
       "-p",
@@ -59,7 +74,7 @@ export const ENGINES: Record<string, EngineDef> = {
   },
   codex: {
     cmd: "codex",
-    models: ["gpt-5.2-codex", "gpt-5.2"],
+    models: modelsFromEnv("AGENT_MODELS_CODEX", ["gpt-5.5", "gpt-5.2-codex", "gpt-5.2"]),
     args: (prompt, opts) => [
       "exec",
       "--full-auto",
