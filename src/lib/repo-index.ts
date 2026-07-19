@@ -79,8 +79,15 @@ export async function prepareRepoWorkspace(
   let indexed = false;
   if (await codegraphAvailable()) {
     try {
-      if (fs.existsSync(path.join(dir, ".codegraph"))) await cg(["sync", "."], dir);
-      else await cg(["init", "."], dir);
+      if (fs.existsSync(path.join(dir, ".codegraph"))) {
+        // 增量同步；索引元数据无效（如"not initialized"）时回退全量重建
+        await cg(["sync", "."], dir).catch(async () => {
+          fs.rmSync(path.join(dir, ".codegraph"), { recursive: true, force: true });
+          await cg(["init", "."], dir);
+        });
+      } else {
+        await cg(["init", "."], dir);
+      }
       indexed = true;
     } catch (err) {
       console.error("codegraph 索引失败（跳过，不影响任务）:", err);
