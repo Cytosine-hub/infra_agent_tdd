@@ -14,6 +14,7 @@ type ActionName =
   | "reject_tests"
   | "start_dev"
   | "retrigger_dev"
+  | "merge_pr"
   | "sync_github"
   | "save_tests";
 
@@ -311,6 +312,20 @@ export default function RequirementDetail({
                 busy={busy === "start_dev"}
                 onClick={() => act("start_dev")}
               />
+            )}
+
+            {req.status === "in_review" && isLead && req.prNumber && (
+              <button
+                className="btn-primary"
+                disabled={busy !== null}
+                onClick={() => {
+                  if (window.confirm(`确认合并 PR #${req.prNumber}？将校验 CI 全绿后 squash 合并并删除分支。`)) {
+                    act("merge_pr");
+                  }
+                }}
+              >
+                {busy === "merge_pr" ? "合并中…" : "✅ 合并 PR 上线"}
+              </button>
             )}
 
             {(req.status === "developing" || req.status === "in_review") && (

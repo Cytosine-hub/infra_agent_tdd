@@ -114,6 +114,37 @@ export async function retriggerDevelop(req: Requirement): Promise<void> {
   });
 }
 
+// 门户内一键合并 PR：先校验所有 check 全绿，squash 合并并删除分支
+export async function mergePullRequest(req: Requirement): Promise<string> {
+  const gh = octokit();
+  const { owner, repo: name } = parseRepo(req.repo);
+  if (!req.prNumber) throw new Error("该需求尚未关联 PR");
+
+  const pr = await gh.pulls.get({ owner, repo: name, pull_number: req.prNumber });
+  if (pr.data.merged) return "PR 已是合并状态";
+  if (pr.data.state !== "open") throw new Error("PR 已关闭，无法合并");
+
+  const checks = await gh.checks.listForRef({ owner, repo: name, ref: pr.data.head.sha });
+  const notGreen = checks.data.check_runs.filter(
+    (c) =>
+      c.status !== "completed" ||
+      (c.conclusion !== null && !["success", "neutral", "skipped"].includes(c.conclusion))
+  );
+  if (notGreen.length > 0) {
+    throw new Error(
+      `CI 未全部通过，拒绝合并：${notGreen
+        .map((c) => `${c.name}（${c.status === "completed" ? c.conclusion : "运行中"}）`)
+        .join("、")}`
+    );
+  }
+
+  await gh.pulls.merge({ owner, repo: name, pull_number: req.prNumber, merge_method: "squash" });
+  if (req.branch) {
+    await gh.git.deleteRef({ owner, repo: name, ref: `heads/${req.branch}` }).catch(() => {});
+  }
+  return `PR #${req.prNumber} 已合并（squash），分支已删除`;
+}
+
 // 轮询该需求关联 Issue 的 PR / 合并状态，用于门户端同步进度
 export async function syncIssueState(req: Requirement): Promise<{
   prNumber: number | null;

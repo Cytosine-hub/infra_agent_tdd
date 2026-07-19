@@ -5,7 +5,12 @@ import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { canPerform, nextTestApprovalState, type Action } from "@/lib/workflow";
 import { generateTestCases } from "@/lib/testcase-gen";
-import { createIssueForRequirement, githubConfigured, syncIssueState } from "@/lib/github";
+import {
+  createIssueForRequirement,
+  githubConfigured,
+  mergePullRequest,
+  syncIssueState,
+} from "@/lib/github";
 import { enqueueDevTask, ENGINES } from "@/lib/agent-runner";
 import { STATUS_LABELS, type TestCase } from "@/lib/types";
 
@@ -18,6 +23,7 @@ const BodySchema = z.object({
     "reject_tests",
     "start_dev",
     "retrigger_dev",
+    "merge_pr",
     "sync_github",
     "save_tests",
   ]),
@@ -142,6 +148,14 @@ export const POST = apiHandler(
         if (!githubConfigured()) return badRequest("GitHub 未配置");
         enqueueDevTask(id, engine);
         addEvent(id, "dev_retriggered", user.username, `重新触发本地 Agent 开发（${engine}）`);
+        break;
+      }
+
+      case "merge_pr": {
+        if (!githubConfigured()) return badRequest("GitHub 未配置");
+        const message = await mergePullRequest(requirement);
+        updateRequirement(id, { status: "done" });
+        addEvent(id, "pr_merged", user.username, message);
         break;
       }
     }
