@@ -29,6 +29,8 @@ const BodySchema = z.object({
   ]),
   reason: z.string().optional(),
   engine: z.string().optional(),
+  model: z.string().optional(),
+  effort: z.enum(["low", "medium", "high"]).optional(),
   testCases: z
     .array(
       z.object({
@@ -53,7 +55,11 @@ export const POST = apiHandler(
     const parsed = BodySchema.safeParse(await req.json());
     if (!parsed.success) return badRequest("请求参数错误");
     const { action, reason, testCases } = parsed.data;
-    const engine = parsed.data.engine ?? process.env.AGENT_ENGINE ?? "claude";
+    // 执行方案优先级：本次请求参数（人工修改）> 已保存方案（AI 评估）> 环境默认
+    const plan = requirement.execPlan;
+    const engine = parsed.data.engine ?? plan?.engine ?? process.env.AGENT_ENGINE ?? "claude";
+    const model = parsed.data.model ?? plan?.model;
+    const effort = parsed.data.effort ?? plan?.effort;
     if (!ENGINES[engine]) return badRequest(`不支持的引擎：${engine}`);
 
     // sync_github / save_tests 不是纯状态机动作，单独处理
@@ -138,16 +144,37 @@ export const POST = apiHandler(
           branch,
         });
         addEvent(id, "dev_started", user.username, `已创建 Issue #${issueNumber}，分支 ${branch}`);
-        // 调度本地 Agent（claude / codex CLI）执行开发
-        enqueueDevTask(id, engine);
-        addEvent(id, "agent_task_enqueued", user.username, `本地 Agent 开发任务已入队（${engine}）`);
+        // 记录最终采用的执行方案（可能被人工修改过），并调度本地 Agent
+        if (parsed.data.engine || parsed.data.model || parsed.data.effort) {
+          updateRequirement(id, {
+            execPlan: {
+              engine,
+              model: model ?? "",
+              effort: effort ?? "medium",
+              rationale: plan?.rationale ?? "人工指定",
+              source: "manual",
+            },
+          });
+        }
+        enqueueDevTask(id, engine, { model, effort });
+        addEvent(
+          id,
+          "agent_task_enqueued",
+          user.username,
+          `本地 Agent 开发任务已入队（${engine}${model ? `/${model}` : ""}${effort ? `/${effort}` : ""}）`
+        );
         break;
       }
 
       case "retrigger_dev": {
         if (!githubConfigured()) return badRequest("GitHub 未配置");
-        enqueueDevTask(id, engine);
-        addEvent(id, "dev_retriggered", user.username, `重新触发本地 Agent 开发（${engine}）`);
+        enqueueDevTask(id, engine, { model, effort });
+        addEvent(
+          id,
+          "dev_retriggered",
+          user.username,
+          `重新触发本地 Agent 开发（${engine}${model ? `/${model}` : ""}${effort ? `/${effort}` : ""}）`
+        );
         break;
       }
 

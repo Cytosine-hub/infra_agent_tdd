@@ -24,15 +24,50 @@ const execFileP = promisify(execFile);
 // 流程：clone(独立工作区) → 建分支 → 生成任务提示词 → 本地 CLI 开发(测试先行)
 //     → runner 强制跑仓库测试 → 兜底提交 → push → Octokit 建 PR → 需求转入 in_review
 
-export const ENGINES: Record<string, { cmd: string; args: (promptFile: string) => string[] }> = {
+export type Effort = "low" | "medium" | "high";
+
+export interface ExecOptions {
+  model?: string;
+  effort?: Effort;
+}
+
+interface EngineDef {
+  cmd: string;
+  models: string[]; // 第一个为默认
+  args: (prompt: string, opts: ExecOptions) => string[];
+  env: (opts: ExecOptions) => Record<string, string>;
+}
+
+export const ENGINES: Record<string, EngineDef> = {
   claude: {
     cmd: "claude",
+    models: ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
     // -p 无头模式；权限跳过仅作用于隔离工作区
-    args: (promptFile) => ["-p", fs.readFileSync(promptFile, "utf-8"), "--dangerously-skip-permissions"],
+    args: (prompt, opts) => [
+      "-p",
+      prompt,
+      "--dangerously-skip-permissions",
+      ...(opts.model ? ["--model", opts.model] : []),
+    ],
+    // Claude Code 的推理强度用思考 token 预算控制
+    env: (opts) => {
+      const env: Record<string, string> = {};
+      if (opts.effort === "high") env.MAX_THINKING_TOKENS = "31999";
+      else if (opts.effort === "medium") env.MAX_THINKING_TOKENS = "16000";
+      return env;
+    },
   },
   codex: {
     cmd: "codex",
-    args: (promptFile) => ["exec", "--full-auto", fs.readFileSync(promptFile, "utf-8")],
+    models: ["gpt-5.2-codex", "gpt-5.2"],
+    args: (prompt, opts) => [
+      "exec",
+      "--full-auto",
+      ...(opts.model ? ["-m", opts.model] : []),
+      ...(opts.effort ? ["-c", `model_reasoning_effort="${opts.effort}"`] : []),
+      prompt,
+    ],
+    env: () => ({}),
   },
 };
 
@@ -83,12 +118,16 @@ function buildPrompt(req: Requirement): string {
 }
 
 // 入队并异步启动（不阻塞 API 请求）
-export function enqueueDevTask(requirementId: number, engine: string): AgentTaskRow {
+export function enqueueDevTask(
+  requirementId: number,
+  engine: string,
+  opts: ExecOptions = {}
+): AgentTaskRow {
   const last = latestAgentTask(requirementId);
   if (last && (last.status === "queued" || last.status === "running") && pidAlive(last.pid)) {
     throw new Error(`该需求已有进行中的 Agent 任务（#${last.id}），请等待其结束`);
   }
-  const task = createAgentTask(requirementId, engine);
+  const task = createAgentTask(requirementId, engine, opts.model ?? "", opts.effort ?? "");
   void runTask(task.id).catch((err) => {
     updateAgentTask(task.id, { status: "failed", error: String(err) });
   });
@@ -149,14 +188,16 @@ async function runTask(taskId: number) {
     // 2. 本地 CLI 开发
     const engine = ENGINES[task.engine];
     if (!engine) throw new Error(`未知引擎：${task.engine}`);
-    const promptFile = path.join(workspace, ".agent-prompt.md");
-    fs.writeFileSync(promptFile, buildPrompt(req));
+    const opts: ExecOptions = {
+      model: task.model || undefined,
+      effort: (task.effort || undefined) as Effort | undefined,
+    };
     updateAgentTask(task.id, { step: "develop" });
-    logLine(`run ${task.engine}`);
+    logLine(`run ${task.engine} (model=${task.model || "默认"}, effort=${task.effort || "默认"})`);
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(engine.cmd, engine.args(promptFile), {
+      const child = spawn(engine.cmd, engine.args(buildPrompt(req), opts), {
         cwd: workspace,
-        env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN },
+        env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN, ...engine.env(opts) },
         stdio: ["ignore", log, log],
         detached: false,
       });
@@ -174,7 +215,6 @@ async function runTask(taskId: number) {
         code === 0 ? resolve() : reject(new Error(`${task.engine} 退出码 ${code}`));
       });
     });
-    fs.rmSync(promptFile, { force: true });
 
     // 3. runner 强制校验测试（不信任 agent 的自述）
     updateAgentTask(task.id, { step: "verify" });

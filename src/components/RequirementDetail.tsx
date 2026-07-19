@@ -5,6 +5,8 @@ import type { Requirement, RequirementEvent, TestCase, User } from "@/lib/types"
 import StatusBadge from "@/components/StatusBadge";
 import AgentRuns from "@/components/AgentRuns";
 import LocalAgentTask from "@/components/LocalAgentTask";
+import ExecPlanCard from "@/components/ExecPlanCard";
+import type { ExecPlan } from "@/lib/types";
 
 type ActionName =
   | "approve_requirement"
@@ -33,6 +35,23 @@ export default function RequirementDetail({
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const [draftCases, setDraftCases] = useState<TestCase[]>([]);
+  const [evaluating, setEvaluating] = useState(false);
+
+  async function evaluatePlan(): Promise<ExecPlan | null> {
+    setEvaluating(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/requirements/${req.id}/evaluate`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "评估失败");
+        return null;
+      }
+      return data.plan as ExecPlan;
+    } finally {
+      setEvaluating(false);
+    }
+  }
 
   const isLead = user.role === "admin" || (user.role === "lead" && user.team === req.team);
   const isRequester = user.username === req.createdBy;
@@ -307,10 +326,12 @@ export default function RequirementDetail({
             )}
 
             {req.status === "testcases_approved" && isLead && (
-              <ActionButton
-                label={busy === "start_dev" ? "创建 Issue 中…" : "🚀 启动 Agent 开发"}
-                busy={busy === "start_dev"}
-                onClick={() => act("start_dev")}
+              <ExecPlanCard
+                savedPlan={req.execPlan}
+                onEvaluate={evaluatePlan}
+                evaluating={evaluating}
+                starting={busy === "start_dev"}
+                onStart={(choice) => act("start_dev", choice)}
               />
             )}
 

@@ -65,6 +65,8 @@ export default function LocalAgentTask({
           本地 Agent 任务 #{task.id}
           <span className="ml-2 rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
             {task.engine}
+            {task.model && ` · ${task.model}`}
+            {task.effort && ` · ${task.effort}`}
           </span>
         </h2>
         <span

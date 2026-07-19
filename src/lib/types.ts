@@ -73,6 +73,15 @@ export interface Repo {
   description: string;
 }
 
+// 启动开发前的执行方案（AI 评估 + 人工可改）
+export interface ExecPlan {
+  engine: string; // claude | codex
+  model: string;
+  effort: "low" | "medium" | "high";
+  rationale: string; // 评估理由
+  source: "ai" | "manual" | "default";
+}
+
 export interface Requirement {
   id: number;
   title: string;
@@ -92,6 +101,7 @@ export interface Requirement {
   prNumber: number | null;
   prUrl: string | null;
   rejectReason: string | null;
+  execPlan: ExecPlan | null;
   createdAt: string;
   updatedAt: string;
 }

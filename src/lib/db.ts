@@ -54,6 +54,8 @@ export function db(): DatabaseSync {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       requirement_id INTEGER NOT NULL,
       engine TEXT NOT NULL DEFAULT 'claude',
+      model TEXT NOT NULL DEFAULT '',
+      effort TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'queued',
       step TEXT NOT NULL DEFAULT '',
       error TEXT,
@@ -89,6 +91,15 @@ function migrate(d: DatabaseSync) {
   if (!ucols.some((c) => c.name === "provider")) {
     d.exec("ALTER TABLE users ADD COLUMN provider TEXT NOT NULL DEFAULT 'local'");
     d.exec("ALTER TABLE users ADD COLUMN provider_login TEXT NOT NULL DEFAULT ''");
+  }
+  const tcols = d.prepare("PRAGMA table_info(agent_tasks)").all() as { name: string }[];
+  if (tcols.length > 0 && !tcols.some((c) => c.name === "model")) {
+    d.exec("ALTER TABLE agent_tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE agent_tasks ADD COLUMN effort TEXT NOT NULL DEFAULT ''");
+  }
+  const rcols = d.prepare("PRAGMA table_info(requirements)").all() as { name: string }[];
+  if (!rcols.some((c) => c.name === "exec_plan")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN exec_plan TEXT");
   }
 }
 
@@ -139,6 +150,7 @@ function rowToRequirement(r: any): Requirement {
     prNumber: r.pr_number,
     prUrl: r.pr_url,
     rejectReason: r.reject_reason,
+    execPlan: r.exec_plan ? JSON.parse(r.exec_plan) : null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -194,6 +206,7 @@ export function updateRequirement(id: number, patch: Record<string, unknown>) {
     prNumber: "pr_number",
     prUrl: "pr_url",
     rejectReason: "reject_reason",
+    execPlan: "exec_plan",
   };
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -201,7 +214,7 @@ export function updateRequirement(id: number, patch: Record<string, unknown>) {
     const col = colMap[k];
     if (!col) continue;
     sets.push(`${col} = ?`);
-    vals.push(k === "testCases" && v !== null ? JSON.stringify(v) : v);
+    vals.push((k === "testCases" || k === "execPlan") && v !== null ? JSON.stringify(v) : v);
   }
   if (!sets.length) return;
   sets.push("updated_at = datetime('now', 'localtime')");
@@ -313,6 +326,8 @@ export interface AgentTaskRow {
   id: number;
   requirementId: number;
   engine: string;
+  model: string;
+  effort: string;
   status: "queued" | "running" | "succeeded" | "failed";
   step: string;
   error: string | null;
@@ -328,6 +343,8 @@ function rowToTask(r: any): AgentTaskRow {
     id: r.id,
     requirementId: r.requirement_id,
     engine: r.engine,
+    model: r.model ?? "",
+    effort: r.effort ?? "",
     status: r.status,
     step: r.step,
     error: r.error,
@@ -339,10 +356,15 @@ function rowToTask(r: any): AgentTaskRow {
   };
 }
 
-export function createAgentTask(requirementId: number, engine: string): AgentTaskRow {
+export function createAgentTask(
+  requirementId: number,
+  engine: string,
+  model = "",
+  effort = ""
+): AgentTaskRow {
   const res = db()
-    .prepare("INSERT INTO agent_tasks (requirement_id, engine) VALUES (?, ?)")
-    .run(requirementId, engine);
+    .prepare("INSERT INTO agent_tasks (requirement_id, engine, model, effort) VALUES (?, ?, ?, ?)")
+    .run(requirementId, engine, model, effort);
   return getAgentTask(Number(res.lastInsertRowid))!;
 }
 

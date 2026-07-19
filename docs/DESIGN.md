@@ -158,6 +158,18 @@ requirement_rejected（可重新审核）              testcases_approved   test
 - **GitHub 侧职责收缩**：Issue 追踪 + CI（`ci.yml`，无需任何 Key）+ Merge Queue 合并；
   云端 `agent-develop.yml` / `claude-pr-review.yml` 模板保留，供有 API Key 的团队选用（两种模式可并存）。
 
+### v5（2026-07-19）：执行方案智能评估
+
+- 「用例审核通过」后、启动开发前，组长可点「🤖 AI 评估」：门户调用本地 Claude Code
+  （小模型 `AGENT_EVAL_MODEL`，默认 haiku，约 10-20 秒）根据任务内容评估执行方案——
+  **用哪个引擎（claude/codex）、什么模型、什么推理强度（low/medium/high）**，并给出一句话理由。
+- 评估结果显示在启动面板中，三项均为下拉框**可人工修改**，最终以启动时的选择为准
+  （方案来源标记 ai / manual / default，全程记入时间线）。
+- AI 输出经 `sanitizePlan` 校验兜底：引擎必须已安装、模型必须在引擎清单内、非法值回退默认；
+  评估调用失败自动回退默认方案，不阻塞流程。
+- 推理强度落地：claude 用 `MAX_THINKING_TOKENS`（16000/31999），codex 用 `model_reasoning_effort`。
+- 重新触发沿用已保存方案；任务卡片展示实际使用的引擎/模型/强度。
+
 ## 6. 后续演进
 
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。
