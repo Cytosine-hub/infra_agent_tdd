@@ -89,26 +89,38 @@ export default async function Dashboard({
         ))}
       </div>
 
-      <div className="mt-8 grid gap-4 lg:grid-cols-5">
+      <div className="mt-8 grid gap-3 lg:grid-cols-5">
         {LANES.map((lane) => {
-          const items = requirements.filter((r) => lane.statuses.includes(r.status));
+          const all = requirements.filter((r) => lane.statuses.includes(r.status));
+          // 已完成列只展示最近 8 条，避免页面被历史需求撑长
+          const isDone = lane.title === "已完成";
+          const items = isDone ? all.slice(0, 8) : all;
           return (
-            <div key={lane.title} className="min-w-0">
-              <div className="mb-2 flex items-center gap-2 px-1 text-sm font-semibold text-zinc-700">
+            <div
+              key={lane.title}
+              className="flex min-w-0 flex-col rounded-xl bg-zinc-100/70 p-2"
+            >
+              <div className="mb-2 flex items-center gap-2 px-1.5 pt-1 text-sm font-semibold text-zinc-700">
                 {lane.title}
                 <span className="rounded-full bg-zinc-200 px-2 py-0.5 text-xs text-zinc-600">
-                  {items.length}
+                  {all.length}
                 </span>
               </div>
-              <div className="flex flex-col gap-2.5">
-                {items.length === 0 && (
-                  <div className="rounded-xl border border-dashed border-zinc-300 py-6 text-center text-xs text-zinc-400">
+              {/* 泳道内独立滚动，整页高度固定 */}
+              <div className="flex max-h-[calc(100vh-330px)] min-h-24 flex-col gap-2 overflow-y-auto pr-0.5">
+                {all.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-zinc-300 py-5 text-center text-xs text-zinc-400">
                     暂无需求
                   </div>
                 )}
                 {items.map((r) => (
                   <RequirementCard key={r.id} r={r} />
                 ))}
+                {isDone && all.length > items.length && (
+                  <div className="py-1.5 text-center text-xs text-zinc-400">
+                    仅显示最近 {items.length} 条，共 {all.length} 条
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -122,20 +134,18 @@ function RequirementCard({ r }: { r: Requirement }) {
   return (
     <Link
       href={`/requirements/${r.id}`}
-      className="card block p-3.5 transition hover:border-zinc-400 hover:shadow"
+      className="card block p-2.5 transition hover:border-zinc-400 hover:shadow"
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="text-xs text-zinc-400">#{r.id}</span>
+        <span className="text-xs text-zinc-400">
+          #{r.id}
+          {r.prNumber && <span className="ml-1.5 text-sky-600">PR#{r.prNumber}</span>}
+        </span>
         <StatusBadge status={r.status} />
       </div>
-      <div className="mt-1.5 line-clamp-2 text-sm font-medium">{r.title}</div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500">
+      <div className="mt-1 line-clamp-2 text-sm font-medium leading-snug">{r.title}</div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-zinc-500">
         <span className="rounded bg-zinc-100 px-1.5 py-0.5">{r.team}</span>
-        {r.repo && (
-          <span className="rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-700">
-            {r.repo.split("/")[1] ?? r.repo}
-          </span>
-        )}
         <span
           className={`rounded px-1.5 py-0.5 ${
             r.priority === "P0"
@@ -149,9 +159,6 @@ function RequirementCard({ r }: { r: Requirement }) {
         </span>
         <span>{r.createdBy}</span>
       </div>
-      {r.prUrl && (
-        <div className="mt-2 truncate text-xs text-sky-600">PR #{r.prNumber}</div>
-      )}
     </Link>
   );
 }
