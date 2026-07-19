@@ -1,0 +1,23 @@
+# 拷贝到目标门户网站仓库。PR 与 merge queue 上强制跑 lint + 测试。
+# 配合分支保护规则（required status checks）保证未通过测试的代码无法合并。
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm test --if-present
+      - run: npm run build --if-present

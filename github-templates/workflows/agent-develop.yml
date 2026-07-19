@@ -1,0 +1,40 @@
+# 拷贝到目标门户网站仓库的 .github/workflows/ 下。
+# 触发：需求门户为审核通过的需求创建 Issue 并打上 agent:develop 标签。
+# 动作：Claude Code 在独立分支上按 CLAUDE.md 规范实现需求、编写并运行测试用例、创建 PR。
+name: Agent Develop
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  develop:
+    if: github.event.label.name == 'agent:develop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            /dev-requirement 按照 Issue #${{ github.event.issue.number }} 实现需求。
+
+            要求：
+            1. 仔细阅读 Issue 正文中的「需求描述」与「验收测试用例」，以及 Issue 评论中指定的开发分支名。
+            2. 基于 main 创建该开发分支并切换过去（分支名形如 feature/req-<门户需求ID>-issue-<Issue号>）。
+            3. 先完整阅读仓库根目录的 agent.md，严格遵循其中的开发规范（目录结构、代码风格、命名、测试框架）。
+            4. 采用测试先行：先把 Issue 中每条验收测试用例转化为自动化测试，再实现功能，直到全部测试通过。
+            5. 运行仓库完整测试套件，确保没有回归。
+            6. push 分支并创建 PR，标题带上 [team 标签]，正文包含：实现摘要、每条验收用例的测试结果对照表、`Closes #${{ github.event.issue.number }}`。
+          claude_args: |
+            --allowedTools "Bash(git:*),Bash(npm:*),Bash(gh:*),Read,Write,Edit,Glob,Grep"

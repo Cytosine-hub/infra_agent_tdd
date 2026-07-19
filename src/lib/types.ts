@@ -1,0 +1,107 @@
+// 需求全生命周期状态机的状态定义
+export const STATUSES = [
+  "submitted", // 已提交，待组长审核
+  "requirement_rejected", // 需求被驳回
+  "requirement_approved", // 需求审核通过，待生成测试用例
+  "testcases_generated", // 测试用例已生成，待组长+需求方审核
+  "testcases_rejected", // 测试用例被驳回，可重新生成
+  "testcases_approved", // 测试用例审核通过，可启动开发
+  "developing", // 已建 GitHub Issue，agent 开发中
+  "in_review", // PR 已创建，CI + Claude 审查中
+  "done", // PR 已合并
+] as const;
+
+export type Status = (typeof STATUSES)[number];
+
+export const STATUS_LABELS: Record<Status, string> = {
+  submitted: "待审核",
+  requirement_rejected: "需求驳回",
+  requirement_approved: "待生成用例",
+  testcases_generated: "用例待审核",
+  testcases_rejected: "用例驳回",
+  testcases_approved: "待启动开发",
+  developing: "开发中",
+  in_review: "PR 审查中",
+  done: "已完成",
+};
+
+export type Role = "member" | "lead" | "admin";
+
+export const ROLE_LABELS: Record<Role, string> = {
+  member: "组员",
+  lead: "组长",
+  admin: "管理员",
+};
+
+export type AuthProvider = "local" | "github" | "gitlab";
+
+export interface User {
+  id: number;
+  username: string;
+  displayName: string;
+  role: Role;
+  team: string;
+  provider: AuthProvider;
+  providerLogin: string;
+}
+
+// GitHub Actions 中一次 agent/CI 工作流运行的状态快照
+export interface AgentRun {
+  id: number;
+  name: string; // workflow 名，如 Agent Develop / CI / Claude PR Review
+  displayTitle: string;
+  headBranch: string;
+  event: string;
+  status: "queued" | "in_progress" | "completed" | string;
+  conclusion: string | null; // success / failure / cancelled / timed_out …
+  htmlUrl: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TestCase {
+  id: string;
+  title: string;
+  precondition: string;
+  steps: string[];
+  expected: string;
+}
+
+export interface Repo {
+  id: number;
+  fullName: string; // owner/repo
+  description: string;
+}
+
+export interface Requirement {
+  id: number;
+  title: string;
+  team: string;
+  repo: string; // 绑定的目标仓库 owner/repo
+  priority: "P0" | "P1" | "P2";
+  description: string;
+  testScenarios: string; // 提交人给出的核心测试场景
+  status: Status;
+  createdBy: string;
+  testCases: TestCase[] | null;
+  leadApprovedTests: 0 | 1;
+  requesterApprovedTests: 0 | 1;
+  githubIssueNumber: number | null;
+  githubIssueUrl: string | null;
+  branch: string | null;
+  prNumber: number | null;
+  prUrl: string | null;
+  rejectReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RequirementEvent {
+  id: number;
+  requirementId: number;
+  type: string;
+  actor: string;
+  detail: string;
+  createdAt: string;
+}
+

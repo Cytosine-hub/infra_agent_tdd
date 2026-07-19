@@ -1,0 +1,33 @@
+# 拷贝到各目标仓库。每个 PR 由 Claude Code 自动审查：
+# 检查是否符合 agent.md 开发规范、是否覆盖 Issue 中全部验收测试用例。
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  review:
+    if: "!github.event.pull_request.draft"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            /review 审查本 PR：
+            1. 找到 PR 关联的 Issue，核对「验收测试用例」是否每条都有对应的自动化测试且逻辑正确。
+            2. 检查代码是否符合仓库根目录 agent.md 中的开发规范。
+            3. 检查是否有明显缺陷、安全问题、对现有功能的破坏。
+            4. 以行内评论指出问题；若全部通过，在 PR 上留下 approve 结论的总结评论。
