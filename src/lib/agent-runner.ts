@@ -345,10 +345,13 @@ async function runTask(taskId: number) {
       throw new Error(isFix ? "修复迭代未产生新提交（未按审查意见修改）" : "Agent 未产生任何提交");
     }
 
-    // 5. push + 建 PR
+    // 5. push + 建 PR。修复迭代是既有分支上的快进 → 普通 push；初次开发分支被重置 → 回退到 force。
     updateAgentTask(task.id, { step: "push" });
     logLine(`push ${req.branch}`);
-    await sh(workspace, log, "git", ["push", "-u", "origin", branch, "--force-with-lease"]);
+    await sh(workspace, log, "git", ["push", "-u", "origin", branch]).catch(async () => {
+      logLine("普通 push 失败（分支历史被重置），改用 --force-with-lease");
+      await sh(workspace, log, "git", ["push", "-u", "origin", branch, "--force-with-lease"]);
+    });
 
     updateAgentTask(task.id, { step: "pull_request" });
     const [owner, name] = req.repo.split("/");
