@@ -20,6 +20,23 @@ function octokit(): Octokit {
   return new Octokit({ auth: process.env.GITHUB_TOKEN });
 }
 
+// 目标仓库默认分支缓存（不同仓库可能是 main / master / 其它，不能写死）
+const defaultBranchCache = new Map<string, string>();
+
+export async function getDefaultBranch(repoFullName: string): Promise<string> {
+  const cached = defaultBranchCache.get(repoFullName);
+  if (cached) return cached;
+  const { owner, repo } = parseRepo(repoFullName);
+  try {
+    const info = await octokit().repos.get({ owner, repo });
+    const branch = info.data.default_branch || "main";
+    defaultBranchCache.set(repoFullName, branch);
+    return branch;
+  } catch {
+    return "main"; // 拿不到时回退，不阻塞流程
+  }
+}
+
 export const AGENT_LABEL = "agent:develop";
 
 // 为需求创建 GitHub Issue，body 中带上完整需求 + 审核通过的测试用例。

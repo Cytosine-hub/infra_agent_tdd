@@ -16,6 +16,7 @@ import {
 import type { Requirement, TestCase } from "./types";
 import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from "./testcase-gen";
 import { ensureGuardApproved } from "./guard";
+import { getDefaultBranch } from "./github";
 
 const execFileP = promisify(execFile);
 
@@ -110,7 +111,48 @@ function cloneUrl(repo: string): string {
     : `git@github.com:${repo}.git`;
 }
 
-function buildPrompt(req: Requirement): string {
+// ---- codegraph 代码智能：为工作区建索引，并在 prompt 里引导 agent 使用 ----
+async function codegraphAvailable(): Promise<boolean> {
+  try {
+    await execFileP("which", ["codegraph"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 在工作区建 codegraph 索引（best-effort，失败不影响任务）。返回是否建成。
+async function buildCodegraphIndex(workspace: string): Promise<boolean> {
+  try {
+    // .codegraph/ 是本地索引，绝不能进 PR：加入 git 本地排除
+    fs.appendFileSync(path.join(workspace, ".git", "info", "exclude"), "\n.codegraph/\n");
+    // 用 init 而非 index：index 需已初始化，fresh clone 上必须用 init 来初始化并建索引
+    await execFileP("codegraph", ["init", "."], {
+      cwd: workspace,
+      timeout: 180_000,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    return true;
+  } catch (err) {
+    console.error("codegraph 建索引失败（跳过，不影响任务）:", err);
+    return false;
+  }
+}
+
+function codegraphHint(indexed: boolean): string {
+  if (!indexed) return "";
+  return [
+    ``,
+    `# 代码智能工具 codegraph（已为本仓库建好索引，强烈建议使用）`,
+    `动手前先用它理解代码结构与影响面，不要盲目全库 grep：`,
+    `- \`codegraph explore <关键词...>\`：一次拿到相关符号的源码 + 调用链`,
+    `- \`codegraph node <符号名>\`：某符号的源码 + 谁调用它 / 它调用谁`,
+    `- \`codegraph callers <符号>\` / \`codegraph callees <符号>\`：调用方 / 被调方`,
+    `- \`codegraph impact <符号>\`：改动该符号会波及哪些代码——**修改已有符号前务必查一次影响面**`,
+  ].join("\n");
+}
+
+function buildPrompt(req: Requirement, codegraph = ""): string {
   return [
     `你是自动化开发 Agent，请在当前仓库工作区内完成以下需求的开发。`,
     ``,
@@ -130,6 +172,7 @@ function buildPrompt(req: Requirement): string {
     `3. 测试先行：先把每条验收测试用例转成自动化测试（测试名注明用例编号，如 TC-01），再实现功能。`,
     `4. 运行仓库完整测试套件，确保全部通过且无回归。`,
     `5. 完成后用中文提交（git commit），提交信息格式遵循 agent.md，引用 Issue 编号 #${req.githubIssueNumber}。`,
+    codegraph,
   ].join("\n");
 }
 
@@ -237,7 +280,15 @@ async function runTask(taskId: number) {
       await sh(workspace, log, "git", ["checkout", branch]);
     });
 
-    // 2. 本地 CLI 开发
+    // 2. 建 codegraph 索引（best-effort），供 agent 探查代码
+    let cgHint = "";
+    if (await codegraphAvailable()) {
+      updateAgentTask(task.id, { step: "index" });
+      logLine("codegraph index");
+      cgHint = codegraphHint(await buildCodegraphIndex(workspace));
+    }
+
+    // 3. 本地 CLI 开发
     const engine = ENGINES[task.engine];
     if (!engine) throw new Error(`未知引擎：${task.engine}`);
     const opts: ExecOptions = {
@@ -247,7 +298,7 @@ async function runTask(taskId: number) {
     updateAgentTask(task.id, { step: "develop" });
     logLine(`run ${task.engine} (model=${task.model || "默认"}, effort=${task.effort || "默认"})`);
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(engine.cmd, engine.args(buildPrompt(req), opts), {
+      const child = spawn(engine.cmd, engine.args(buildPrompt(req, cgHint), opts), {
         cwd: workspace,
         env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN, ...engine.env(opts) },
         stdio: ["ignore", log, log],
@@ -285,11 +336,14 @@ async function runTask(taskId: number) {
       "commit", "-m", `feat: ${req.title} (#${req.githubIssueNumber})`,
     ]).catch(() => {/* 无未提交变更时忽略 */});
 
-    // 确认相对 main 有实际提交
-    await sh(workspace, log, "git", ["fetch", "origin", "main"]);
-    const { stdout } = await execFileP("git", ["rev-list", "--count", "origin/main..HEAD"], {
-      cwd: workspace,
-    });
+    // 确认相对目标仓库默认分支有实际提交（默认分支可能是 main/master/其它）
+    const baseBranch = await getDefaultBranch(req.repo);
+    await sh(workspace, log, "git", ["fetch", "origin", baseBranch]);
+    const { stdout } = await execFileP(
+      "git",
+      ["rev-list", "--count", `origin/${baseBranch}..HEAD`],
+      { cwd: workspace }
+    );
     if (Number(stdout.trim()) === 0) throw new Error("Agent 未产生任何提交");
 
     // 5. push + 建 PR
@@ -309,7 +363,7 @@ async function runTask(taskId: number) {
       const pr = await gh.pulls.create({
         owner,
         repo: name,
-        base: "main",
+        base: baseBranch,
         head: branch,
         title: `[${req.team}] ${req.title}`,
         body: [
@@ -392,7 +446,7 @@ async function runTestcaseTask(taskId: number) {
   );
 }
 
-function buildReviewPrompt(req: Requirement): string {
+function buildReviewPrompt(req: Requirement, baseBranch: string): string {
   return [
     `你是代码审查员。当前工作区已检出 PR 分支（${req.branch}），请审查该 PR 的变更。`,
     ``,
@@ -404,7 +458,7 @@ function buildReviewPrompt(req: Requirement): string {
     testCasesToMarkdown(req.testCases ?? []),
     ``,
     `# 审查步骤`,
-    `1. 运行 \`git diff origin/main...HEAD\` 查看全部变更。`,
+    `1. 运行 \`git diff origin/${baseBranch}...HEAD\` 查看全部变更。`,
     `2. 阅读仓库根目录 agent.md，核对变更是否符合开发规范（模块自包含、不改他人文件等）。`,
     `3. 核对每条验收测试用例是否有对应的自动化测试且断言正确。`,
     `4. 检查明显缺陷、安全问题、对现有功能的破坏。`,
@@ -443,11 +497,19 @@ async function runReviewTask(taskId: number) {
     await sh(wsRoot, log, "git", ["clone", cloneUrl(req.repo), workspace]);
     await sh(workspace, log, "git", ["checkout", branch]);
 
+    // codegraph 索引（best-effort），供审查 agent 查影响面
+    let cgHint = "";
+    if (await codegraphAvailable()) {
+      updateAgentTask(task.id, { step: "index" });
+      logLine("codegraph index");
+      cgHint = codegraphHint(await buildCodegraphIndex(workspace));
+    }
+
     updateAgentTask(task.id, { step: "review" });
     logLine(`run ${task.engine} review`);
     const engine = ENGINES[task.engine];
     const outFile = path.join(workspace, ".review-result.md");
-    const prompt = buildReviewPrompt(req);
+    const prompt = buildReviewPrompt(req, await getDefaultBranch(req.repo)) + cgHint;
     // codex 用 --output-last-message 捕获最终结论；claude -p 的 stdout 即结论
     let result: string;
     if (task.engine === "codex") {

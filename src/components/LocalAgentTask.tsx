@@ -13,6 +13,7 @@ const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
 const STEP_LABELS: Record<string, string> = {
   guard: "安全审查",
   clone: "拉取代码",
+  index: "建代码索引",
   develop: "Agent 开发中",
   verify: "运行测试校验",
   push: "推送分支",

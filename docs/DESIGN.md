@@ -219,6 +219,17 @@ AI 环节全景（均为本地 CLI，不依赖云端 API Key）：
 - 提交需求的仓库下拉框按当前用户过滤（`/api/repos?forUser=1`）；API 层双重校验，
   绕过 UI 直接提交组外专属仓库会被拒绝（`src/lib/repo-access.ts`，单元测试覆盖）。
 
+### v10（2026-07-19）：默认分支适配 + codegraph 代码智能接入
+
+- **默认分支适配**：目标仓库默认分支可能是 main/master/其它，不再写死 main。
+  `getDefaultBranch(repo)`（Octokit `repos.get().default_branch`，带缓存、失败回退 main）
+  贯穿开发任务的 fetch / rev-list / PR base 与审查任务的 diff 基准。已实测 middleware 仓库解析为 master。
+- **codegraph 代码智能**：开发/审查任务在 fresh clone checkout 后自动 `codegraph init` 建索引
+  （best-effort，未安装或失败则跳过，不阻塞任务；`.codegraph/` 写入 `.git/info/exclude` 绝不进 PR），
+  并在 agent 提示词中引导使用 `codegraph explore/node/callers/callees/impact`——
+  动手前查结构、改动前查影响面。claude/codex 均为全权限模式可直接调用，无需改 allowedTools。
+  任务新增「建代码索引」步骤。踩坑：fresh clone 上必须用 `codegraph init`（`index` 需已初始化）。
+
 ## 6. 后续演进
 
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。

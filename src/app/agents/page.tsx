@@ -27,6 +27,7 @@ const STEP_LABELS: Record<string, string> = {
   claimed: "已认领",
   guard: "安全审查",
   clone: "拉取代码",
+  index: "建代码索引",
   generate: "生成用例",
   develop: "编码中",
   verify: "测试校验",
