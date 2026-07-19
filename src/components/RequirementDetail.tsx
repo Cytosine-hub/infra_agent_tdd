@@ -175,14 +175,17 @@ export default function RequirementDetail({
             }`}
           >
             {req.reviewVerdict === "approved" ? (
-              <>✅ 代码审查<strong>建议合并</strong>，可点右侧「合并 PR 上线」。</>
+              <>
+                ✅ 代码审查<strong>无阻断问题，可合并</strong>。若有非阻断【建议】已列在 PR
+                评论中，可选择性处理，不阻断上线。
+              </>
             ) : (
               <>
-                ⚠️ 代码审查<strong>建议修改</strong>
+                ⛔ 代码审查发现<strong>阻断性问题</strong>
                 {req.fixRounds > 0 && `，已自动修复 ${req.fixRounds} 轮`}
                 {req.fixRounds >= 3
                   ? "（已达自动修复上限，请人工介入或手动重新触发）"
-                  : "，系统正自动把意见喂回编码 Agent 修改并复审"}
+                  : "，系统正自动把阻断项喂回编码 Agent 修改并复审"}
                 。
               </>
             )}

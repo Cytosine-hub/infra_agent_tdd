@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { effectiveTaskStatus, parseReviewVerdict } from "../agent-runner";
 
-describe("parseReviewVerdict", () => {
-  it("识别建议合并 / 建议修改", () => {
-    expect(parseReviewVerdict("✅ 建议合并\n无问题")).toBe("approved");
-    expect(parseReviewVerdict("⚠️ 建议修改\n- 某处有问题")).toBe("changes");
+describe("parseReviewVerdict（分级契约）", () => {
+  it("[阻断] → changes（触发修复循环）", () => {
+    expect(parseReviewVerdict("[阻断] 建议修改\n【阻断】TC-03 无对应测试")).toBe("changes");
   });
-  it("建议修改优先于其它（首行判定）", () => {
-    expect(parseReviewVerdict("⚠️ 建议修改\n虽然大部分可以合并，但…")).toBe("changes");
+  it("[通过] 且仅剩非阻断建议 → approved（停止继续开发）", () => {
+    expect(parseReviewVerdict("[通过] 建议合并\n【建议】命名可优化\n【建议】可读性可提升")).toBe(
+      "approved"
+    );
+  });
+  it("自由文本兜底：无阻断→approved / 存在阻断→changes", () => {
+    expect(parseReviewVerdict("无阻断问题，可以合并")).toBe("approved");
+    expect(parseReviewVerdict("存在阻断问题：功能不正确")).toBe("changes");
+    expect(parseReviewVerdict("✅ 建议合并\n未发现问题")).toBe("approved");
+    expect(parseReviewVerdict("正文里提到\n【阻断】测试未过")).toBe("changes");
   });
   it("无法识别返回空", () => {
     expect(parseReviewVerdict("这是一段无关的话")).toBe("");

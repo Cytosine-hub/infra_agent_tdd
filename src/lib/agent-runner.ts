@@ -56,8 +56,9 @@ export const ENGINES: Record<string, EngineDef> = {
   claude: {
     cmd: "claude",
     models: modelsFromEnv("AGENT_MODELS_CLAUDE", [
-      "claude-sonnet-5",
+      "claude-fable-5",
       "claude-opus-4-8",
+      "claude-sonnet-5",
       "claude-haiku-4-5-20251001",
     ]),
     // -p 无头模式；权限跳过仅作用于隔离工作区
@@ -77,7 +78,7 @@ export const ENGINES: Record<string, EngineDef> = {
   },
   codex: {
     cmd: "codex",
-    models: modelsFromEnv("AGENT_MODELS_CODEX", ["gpt-5.5", "gpt-5.2-codex", "gpt-5.2"]),
+    models: modelsFromEnv("AGENT_MODELS_CODEX", ["gpt-5.6", "gpt-5.5", "gpt-5.4"]),
     args: (prompt, opts) => [
       "exec",
       "--full-auto",
@@ -106,15 +107,19 @@ const TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MIN ?? 30) * 60_000;
 const MAX_FIX_ROUNDS = Number(process.env.AGENT_MAX_FIX_ROUNDS ?? 3);
 const AUTO_FIX = process.env.AGENT_AUTO_FIX !== "0";
 
-// 解析审查结论：首个有意义行含"建议合并"→approved；含"建议修改"→changes
+// 解析审查结论（分级契约）：仅存在【阻断】问题 → changes 触发修复循环；
+// 只有非阻断【建议】或无问题 → approved，停止继续开发。
 export function parseReviewVerdict(result: string): "approved" | "changes" | "" {
   const head = (result || "").split(/\r?\n/).find((l) => l.trim())?.trim() ?? "";
-  const scope = head || result;
-  if (/建议修改|需要修改|不建议合并/.test(scope)) return "changes";
-  if (/建议合并|通过|可以合并|approve/i.test(scope)) return "approved";
-  // 兜底：全文里找
-  if (/建议修改|需要修改/.test(result)) return "changes";
+  // 首选：首行的 [阻断]/[通过] 标签（提示词契约）
+  if (/\[\s*阻断\s*\]/.test(head)) return "changes";
+  if (/\[\s*通过\s*\]/.test(head)) return "approved";
+  // 兜底（模型未按契约输出时的自由文本判定）
+  if (/无阻断|建议合并|可以合并|可合并|approve/i.test(head)) return "approved";
+  if (/存在阻断|阻断性|必须修改/.test(head)) return "changes";
+  if (/建议修改|需要修改|不建议合并/.test(head) && !/合并/.test(head)) return "changes";
   if (/建议合并/.test(result)) return "approved";
+  if (/【阻断】/.test(result)) return "changes";
   return "";
 }
 
@@ -149,7 +154,9 @@ function buildPrompt(req: Requirement, codegraph = "", fixFeedback = ""): string
     `## 验收测试用例（必须全部满足）`,
     testCasesToMarkdown(req.testCases ?? []),
     ``,
-    fixMode ? `## ⚠️ 上一轮代码审查意见（请逐条修改解决）\n${fixFeedback}` : ``,
+    fixMode
+      ? `## ⚠️ 上一轮代码审查意见\n${fixFeedback}\n\n> 修改范围：【阻断】项**必须逐条解决**；【建议】项可顺手处理但非必须，不要为其扩大改动面。`
+      : ``,
     ``,
     `# 工作要求`,
     `1. 先完整阅读仓库根目录 agent.md 并严格遵循其中的开发规范。`,
@@ -465,9 +472,16 @@ function buildReviewPrompt(req: Requirement, baseBranch: string): string {
     `3. 核对每条验收测试用例是否有对应的自动化测试且断言正确。`,
     `4. 检查明显缺陷、安全问题、对现有功能的破坏。`,
     ``,
+    `# 严重程度分级（关键）`,
+    `- 【阻断】：功能不正确、验收用例未覆盖或测试未通过、安全问题、破坏现有功能、严重违反 agent.md 规范。必须修改才能合并。`,
+    `- 【建议】：代码风格、命名、可读性、小优化、主观偏好等。**不影响合并**，不要因这类问题要求修改。`,
+    `判定从严：拿不准或属主观偏好的一律归【建议】。`,
+    ``,
     `# 输出要求（你的最终回答会被直接贴到 PR 评论）`,
-    `用中文 Markdown 输出：第一行为结论「✅ 建议合并」或「⚠️ 建议修改」；`,
-    `之后分条列出发现的问题（文件:行号 + 说明 + 建议），没有问题则简述验证了哪些点。不要修改任何代码。`,
+    `第一行必须严格是下列之一（按是否存在【阻断】项判定，标签原样输出）：`,
+    `- \`[阻断] 建议修改\` —— 存在至少一个【阻断】问题`,
+    `- \`[通过] 建议合并\` —— 无【阻断】问题（可以有若干【建议】）`,
+    `之后分条列出发现，每条以【阻断】或【建议】开头，注明 文件:行号 + 说明 + 修改建议；无任何问题写「未发现问题」。不要修改任何代码。`,
   ].join("\n");
 }
 
@@ -562,7 +576,7 @@ async function runReviewTask(taskId: number) {
       req.id,
       "review_done",
       "system",
-      `审查完成（${verdict === "approved" ? "建议合并" : verdict === "changes" ? "建议修改" : "结论未识别"}），已评论到 PR #${req.prNumber}`
+      `审查完成（${verdict === "approved" ? "无阻断，可合并" : verdict === "changes" ? "存在阻断问题" : "结论未识别"}），已评论到 PR #${req.prNumber}`
     );
     logLine(`review done: ${verdict}`);
 

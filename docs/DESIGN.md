@@ -294,6 +294,17 @@ runner 全局串行执行，故同一项目的所有任务（开发/修复/审�
 - 统一了 codegraph 镜像与工作区（一处 clone 一份索引）；`prepareWorkspaceIndex`（拷贝式）与 `buildMirrorIndex` 移除。
 - 串行是前提（runner 单线程）；后期若要并行执行，需按分支/需求隔离工作区再改。
 
+### v16（2026-07-19）：审查分级 + 模型清单实测更新
+
+- **审查建议分级**：审查输出契约改为首行 `[阻断] 建议修改` / `[通过] 建议合并`，每条发现以【阻断】/【建议】开头。
+  - 【阻断】= 功能不正确/用例未覆盖/测试未过/安全/破坏现有功能/严重违规——才触发自动修复循环；
+  - 【建议】= 风格/命名/可读性/主观偏好——**不阻断合并、不触发循环**（此前非阻断 nitpick 也会烧掉修复轮次）。
+  - `parseReviewVerdict` 标签优先解析 + 自由文本兜底；修复提示词明确「阻断必须解决，建议项不扩大改动面」。
+- **模型清单实测更新**（经网关/CLI 逐一验证）：claude 默认加入 **claude-fable-5**（最新，Claude 5 系）；
+  codex 网关实测可用 **gpt-5.6 / gpt-5.6-sol / gpt-5.5 / gpt-5.4**（gpt-5.3-codex 503、gpt-5.5-codex 404），默认清单与 .env 相应更新。
+- middleware_resource_manager 主线切换：`feature/ops-agent`（领先 314 提交）强推为 master（旧 master 备份于 tag `backup/master-20260719`），
+  过时 PR/分支清理，仓库按新主线**全量重新入驻**（删旧工作区与旧索引，全新 clone + codegraph init + agent.md 重生成）。
+
 ## 6. 后续演进
 
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。
