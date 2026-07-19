@@ -282,6 +282,18 @@ AI 环节全景（均为本地 CLI，不依赖云端 API Key）：
 - **门户可见**：详情页显示审查结论（建议合并/修改）+ 已自动修复轮次；任务卡片新增「按审查意见修复」步骤。
 - `start_dev` 开启新开发周期时重置闭环状态。
 
+### v15（2026-07-19）：每项目共享工作区（串行复用）
+
+runner 全局串行执行，故同一项目的所有任务（开发/修复/审查/入驻）**共享一个工作区**
+（`data/repos/<repo>`），而非每任务重新 clone：
+
+- **`prepareRepoWorkspace`**：首次全量 clone（含所有分支，`origin/<分支>` ref 齐全，根治此前浅克隆 checkout 报 git 128 的问题）；
+  之后每次任务前 `reset --hard + clean -fd`（保留被忽略的 `.codegraph/`、`node_modules/` 加速）→ 切目标分支 → codegraph 增量 `sync`。
+- **收益**：不再每任务重 clone 大仓库（middleware 每轮省数分钟）；codegraph 索引持久复用；
+  修复迭代天然基于既有分支（配合 v14 闭环）；杜绝旧的 per-task 工作区磁盘泄漏（实测清出 16 个目录、408MB）。
+- 统一了 codegraph 镜像与工作区（一处 clone 一份索引）；`prepareWorkspaceIndex`（拷贝式）与 `buildMirrorIndex` 移除。
+- 串行是前提（runner 单线程）；后期若要并行执行，需按分支/需求隔离工作区再改。
+
 ## 6. 后续演进
 
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。

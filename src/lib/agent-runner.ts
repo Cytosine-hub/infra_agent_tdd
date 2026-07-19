@@ -17,7 +17,7 @@ import type { Requirement, TestCase } from "./types";
 import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from "./testcase-gen";
 import { ensureGuardApproved } from "./guard";
 import { getDefaultBranch } from "./github";
-import { cloneUrl, codegraphAvailable, DATA_DIR, prepareWorkspaceIndex } from "./repo-index";
+import { DATA_DIR, prepareRepoWorkspace, repoWorkspaceDir } from "./repo-index";
 
 const execFileP = promisify(execFile);
 
@@ -256,53 +256,39 @@ async function runTask(taskId: number) {
   if (!req.branch || !req.githubIssueNumber) throw new Error("需求缺少分支/Issue 信息");
   const branch = req.branch;
 
-  const wsRoot = path.join(DATA_DIR, "workspaces");
-  const workspace = path.join(wsRoot, `req-${req.id}-task-${task.id}`);
   const logDir = path.join(DATA_DIR, "agent-logs");
-  fs.mkdirSync(wsRoot, { recursive: true });
   fs.mkdirSync(logDir, { recursive: true });
   const logPath = path.join(logDir, `task-${task.id}.log`);
   const log = fs.openSync(logPath, "a");
   const logLine = (s: string) => fs.writeSync(log, `\n===== [portal] ${s} =====\n`);
 
+  const workspace = repoWorkspaceDir(req.repo);
   updateAgentTask(task.id, { status: "running", logPath, workspace, step: "guard" });
   addEvent(req.id, "agent_task_started", "system", `本地 Agent 任务 #${task.id}（${task.engine}）启动`);
 
   try {
     await ensureGuardApproved(req.id); // 防滥用门审
-    updateAgentTask(task.id, { step: "clone" });
 
     // 修复迭代模式：已有 PR + 审查意见 → 在既有分支上改，而非从 main 重做
     const fixFeedback = req.prNumber && req.reviewVerdict === "changes" ? req.reviewFeedback : "";
     const isFix = !!fixFeedback;
+    const baseBranch = await getDefaultBranch(req.repo);
 
-    // 1. 独立工作区 clone + 分支
-    logLine(`clone ${req.repo}${isFix ? "（修复迭代，基于既有分支）" : ""}`);
-    fs.rmSync(workspace, { recursive: true, force: true });
-    await sh(wsRoot, log, "git", ["clone", "--depth", "20", cloneUrl(req.repo), workspace]);
-    let fixBaseSha = "";
-    if (isFix) {
-      // 浅单分支克隆里 origin/<branch> ref 不存在，只能经 FETCH_HEAD 复用既有实现
-      await sh(workspace, log, "git", ["fetch", "origin", branch]);
-      const { stdout } = await execFileP("git", ["rev-parse", "FETCH_HEAD"], { cwd: workspace });
-      fixBaseSha = stdout.trim();
-      await sh(workspace, log, "git", ["checkout", "-B", branch, "FETCH_HEAD"]);
-    } else {
-      logLine(`checkout ${req.branch}`);
-      await sh(workspace, log, "git", ["checkout", "-B", branch]).catch(async () => {
-        await sh(workspace, log, "git", ["checkout", branch]);
-      });
-    }
+    // 1. 共享工作区（同项目串行复用，非每任务重 clone）：清理 → 切分支 → 增量索引
+    updateAgentTask(task.id, { step: "clone" });
+    logLine(`prepare workspace ${req.repo} @ ${branch}${isFix ? "（修复迭代，复用既有分支）" : ""}`);
+    const { indexed } = await prepareRepoWorkspace(req.repo, {
+      branch,
+      base: isFix ? undefined : baseBranch,
+      useExistingBranch: isFix,
+    });
+    // 修复迭代的提交对比基准：既有分支 tip（切分支前 = origin/<branch>）
+    const fixBaseSha = isFix
+      ? (await execFileP("git", ["rev-parse", `origin/${branch}`], { cwd: workspace })).stdout.trim()
+      : "";
+    const cgHint = codegraphHint(indexed);
 
-    // 2. 建 codegraph 索引（best-effort），供 agent 探查代码
-    let cgHint = "";
-    if (await codegraphAvailable()) {
-      updateAgentTask(task.id, { step: "index" });
-      logLine("codegraph index");
-      cgHint = codegraphHint(await prepareWorkspaceIndex(workspace, req.repo));
-    }
-
-    // 3. 本地 CLI 开发
+    // 2. 本地 CLI 开发
     const engine = ENGINES[task.engine];
     if (!engine) throw new Error(`未知引擎：${task.engine}`);
     const opts: ExecOptions = {
@@ -350,10 +336,8 @@ async function runTask(taskId: number) {
       "commit", "-m", `feat: ${req.title} (#${req.githubIssueNumber})`,
     ]).catch(() => {/* 无未提交变更时忽略 */});
 
-    // 确认有实际新提交。基准：初次开发对比默认分支；修复迭代对比既有分支 tip（FETCH_HEAD sha）
-    const baseBranch = await getDefaultBranch(req.repo);
+    // 确认有实际新提交。基准：初次开发对比默认分支；修复迭代对比既有分支 tip
     const commitBase = isFix ? fixBaseSha : `origin/${baseBranch}`;
-    if (!isFix) await sh(workspace, log, "git", ["fetch", "origin", baseBranch]);
     const { stdout } = await execFileP("git", ["rev-list", "--count", `${commitBase}..HEAD`], {
       cwd: workspace,
     });
@@ -492,33 +476,24 @@ async function runReviewTask(taskId: number) {
   if (!req.branch || !req.prNumber) throw new Error("该需求尚无 PR，无法审查");
   const branch = req.branch;
 
-  const wsRoot = path.join(DATA_DIR, "workspaces");
-  const workspace = path.join(wsRoot, `req-${req.id}-review-${task.id}`);
   const logDir = path.join(DATA_DIR, "agent-logs");
-  fs.mkdirSync(wsRoot, { recursive: true });
   fs.mkdirSync(logDir, { recursive: true });
   const logPath = path.join(logDir, `task-${task.id}.log`);
   const log = fs.openSync(logPath, "a");
   const logLine = (s: string) => fs.writeSync(log, `\n===== [portal] ${s} =====\n`);
 
+  const workspace = repoWorkspaceDir(req.repo);
   updateAgentTask(task.id, { status: "running", logPath, workspace, step: "guard" });
   addEvent(req.id, "review_started", "system", `Codex 审查任务 #${task.id} 启动（PR #${req.prNumber}）`);
 
   try {
     await ensureGuardApproved(req.id); // 防滥用门审
-    updateAgentTask(task.id, { step: "clone" });
-    logLine(`clone ${req.repo} @ ${branch}`);
-    fs.rmSync(workspace, { recursive: true, force: true });
-    await sh(wsRoot, log, "git", ["clone", cloneUrl(req.repo), workspace]);
-    await sh(workspace, log, "git", ["checkout", branch]);
 
-    // codegraph 索引（best-effort），供审查 agent 查影响面
-    let cgHint = "";
-    if (await codegraphAvailable()) {
-      updateAgentTask(task.id, { step: "index" });
-      logLine("codegraph index");
-      cgHint = codegraphHint(await prepareWorkspaceIndex(workspace, req.repo));
-    }
+    // 共享工作区：切到 PR 分支 + 增量索引
+    updateAgentTask(task.id, { step: "clone" });
+    logLine(`prepare workspace ${req.repo} @ ${branch}`);
+    const { indexed } = await prepareRepoWorkspace(req.repo, { branch, useExistingBranch: true });
+    const cgHint = codegraphHint(indexed);
 
     updateAgentTask(task.id, { step: "review" });
     logLine(`run ${task.engine} review`);

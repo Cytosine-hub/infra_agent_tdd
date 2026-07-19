@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { Octokit } from "@octokit/rest";
 import { getRepoById, updateRepoOnboard } from "./db";
 import { ENGINES } from "./agent-runner";
-import { buildMirrorIndex, repoMirrorDir, codegraphAvailable } from "./repo-index";
+import { prepareRepoWorkspace, repoWorkspaceDir } from "./repo-index";
 import { getDefaultBranch } from "./github";
 
 // 仓库入驻：加入门户时后台执行——建持久 codegraph 索引 + 分析生成/补齐 agent.md 并开 PR。
@@ -176,10 +176,10 @@ export async function runRepoOnboard(repoId: number): Promise<void> {
   const repo = getRepoById(repoId);
   if (!repo) return;
   try {
-    // 1. 持久镜像 + codegraph 索引
+    // 1. 共享工作区（clone + 切默认分支 + codegraph 索引）
     updateRepoOnboard(repoId, { onboardStep: "建代码索引" });
-    await buildMirrorIndex(repo.fullName);
-    const indexed = await codegraphAvailable();
+    const base = await getDefaultBranch(repo.fullName);
+    const { indexed } = await prepareRepoWorkspace(repo.fullName, { base });
     updateRepoOnboard(repoId, { indexedAt: new Date().toISOString().replace("T", " ").slice(0, 19) });
 
     // 2. agent.md：分析生成/补齐 → 开 PR（best-effort，不阻塞就绪）
@@ -187,7 +187,7 @@ export async function runRepoOnboard(repoId: number): Promise<void> {
     if (process.env.GITHUB_TOKEN) {
       try {
         updateRepoOnboard(repoId, { onboardStep: "生成 agent.md" });
-        const mirror = repoMirrorDir(repo.fullName);
+        const mirror = repoWorkspaceDir(repo.fullName);
         const existingPath = path.join(mirror, "agent.md");
         const hasExisting = fs.existsSync(existingPath);
         const existing = hasExisting ? fs.readFileSync(existingPath, "utf-8").trim() : "";

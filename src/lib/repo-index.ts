@@ -6,11 +6,15 @@ import fs from "node:fs";
 const execFileP = promisify(execFile);
 
 export const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
+const GIT_TIMEOUT = 600_000;
+const CG_TIMEOUT = 300_000;
 
-// 服务器按仓库存一份持久 clone + codegraph 索引，供各任务复用
-export function repoMirrorDir(repoFullName: string): string {
+// 每个项目一个共享工作区（runner 全局串行，故同项目任务串行复用同一目录；后期并行再改）。
+export function repoWorkspaceDir(repoFullName: string): string {
   return path.join(DATA_DIR, "repos", repoFullName.replace(/[/]/g, "__"));
 }
+// 兼容旧名
+export const repoMirrorDir = repoWorkspaceDir;
 
 export function cloneUrl(repoFullName: string): string {
   const token = process.env.GITHUB_TOKEN;
@@ -28,56 +32,59 @@ export async function codegraphAvailable(): Promise<boolean> {
   }
 }
 
-const CG_TIMEOUT = 300_000;
-
+async function git(dir: string, args: string[]) {
+  await execFileP("git", ["-C", dir, ...args], { timeout: GIT_TIMEOUT, maxBuffer: 50 * 1024 * 1024 });
+}
 async function cg(args: string[], cwd: string) {
   await execFileP("codegraph", args, { cwd, timeout: CG_TIMEOUT, maxBuffer: 50 * 1024 * 1024 });
 }
 
-// 入驻时建/刷新持久镜像索引。返回索引节点信息文本（供日志）。
-export async function buildMirrorIndex(repoFullName: string): Promise<void> {
-  const mirror = repoMirrorDir(repoFullName);
-  fs.mkdirSync(path.dirname(mirror), { recursive: true });
-  if (fs.existsSync(path.join(mirror, ".git"))) {
-    await execFileP("git", ["-C", mirror, "fetch", "--depth", "20", "origin"], { timeout: CG_TIMEOUT });
-    await execFileP("git", ["-C", mirror, "reset", "--hard", "origin/HEAD"], { timeout: CG_TIMEOUT }).catch(
-      async () => {
-        // origin/HEAD 未设置时按默认分支
-        await execFileP("git", ["-C", mirror, "pull", "--ff-only"], { timeout: CG_TIMEOUT });
-      }
-    );
-  } else {
-    fs.rmSync(mirror, { recursive: true, force: true });
-    await execFileP("git", ["clone", "--depth", "20", cloneUrl(repoFullName), mirror], {
-      timeout: CG_TIMEOUT,
-    });
-  }
-  if (!(await codegraphAvailable())) return;
-  if (fs.existsSync(path.join(mirror, ".codegraph"))) await cg(["sync", "."], mirror);
-  else await cg(["init", "."], mirror);
+export interface PrepareOpts {
+  branch?: string; // 目标功能分支
+  base?: string; // 默认分支（新开发时功能分支从它切出）
+  useExistingBranch?: boolean; // true=复用远程既有分支（修复/审查），false=从 base 新建
 }
 
-// 任务工作区准备索引：优先复用镜像索引（拷贝 + sync，快），无镜像则 fresh init。
-// 返回是否建成可用索引。
-export async function prepareWorkspaceIndex(workspace: string, repoFullName: string): Promise<boolean> {
-  if (!(await codegraphAvailable())) return false;
-  // .codegraph/ 是本地索引，绝不能进 PR
-  try {
-    fs.appendFileSync(path.join(workspace, ".git", "info", "exclude"), "\n.codegraph/\n");
-  } catch {
-    /* ignore */
+// 准备共享工作区：确保已 clone（全量，含所有分支）→ 清理上一个任务残留 → 切到目标分支 → 增量建索引。
+// 返回工作区路径与索引是否可用。全局串行调用，无并发。
+export async function prepareRepoWorkspace(
+  repoFullName: string,
+  opts: PrepareOpts
+): Promise<{ dir: string; indexed: boolean }> {
+  const dir = repoWorkspaceDir(repoFullName);
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+
+  if (!fs.existsSync(path.join(dir, ".git"))) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    // 全量 clone（含所有分支），后续任务只 fetch；origin/<分支> ref 齐全，避免浅克隆的 checkout 问题
+    await execFileP("git", ["clone", cloneUrl(repoFullName), dir], { timeout: GIT_TIMEOUT });
+    fs.appendFileSync(path.join(dir, ".git", "info", "exclude"), "\n.codegraph/\nnode_modules/\n");
   }
-  try {
-    const mirrorIdx = path.join(repoMirrorDir(repoFullName), ".codegraph");
-    if (fs.existsSync(mirrorIdx)) {
-      fs.cpSync(mirrorIdx, path.join(workspace, ".codegraph"), { recursive: true });
-      await cg(["sync", "."], workspace); // 增量同步到本分支，远快于全量
-    } else {
-      await cg(["init", "."], workspace); // 无镜像（如入驻前）则全量建
+
+  // 清理上一个任务的未提交改动与未跟踪文件（保留 .codegraph / node_modules 等被忽略项，加速下次）
+  await git(dir, ["reset", "--hard"]);
+  await git(dir, ["clean", "-fd"]);
+  // 确保拉取所有分支的远程跟踪 ref（兼容遗留的单分支/浅克隆，否则 origin/<功能分支> 不存在）
+  await git(dir, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]);
+  await git(dir, ["fetch", "origin", "--prune"]);
+
+  if (opts.branch && opts.useExistingBranch) {
+    await git(dir, ["checkout", "-B", opts.branch, `origin/${opts.branch}`]);
+  } else if (opts.branch && opts.base) {
+    await git(dir, ["checkout", "-B", opts.branch, `origin/${opts.base}`]);
+  } else if (opts.base) {
+    await git(dir, ["checkout", "-B", opts.base, `origin/${opts.base}`]);
+  }
+
+  let indexed = false;
+  if (await codegraphAvailable()) {
+    try {
+      if (fs.existsSync(path.join(dir, ".codegraph"))) await cg(["sync", "."], dir);
+      else await cg(["init", "."], dir);
+      indexed = true;
+    } catch (err) {
+      console.error("codegraph 索引失败（跳过，不影响任务）:", err);
     }
-    return true;
-  } catch (err) {
-    console.error("codegraph 工作区索引失败（跳过，不影响任务）:", err);
-    return false;
   }
+  return { dir, indexed };
 }
