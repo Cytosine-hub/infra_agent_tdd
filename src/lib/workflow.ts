@@ -40,6 +40,13 @@ export const ACTION_RULES: Record<Action, ActionRule> = {
   generate_tests: {
     from: ["requirement_approved", "testcases_rejected", "testcases_generated"],
     roles: "any",
+    // 防滥用：仅本组组长/管理员或需求提交人可触发 AI 生成
+    guard: (req, user) => {
+      const isLead = sameTeamLead(req, user) === null;
+      return isLead || user.username === req.createdBy
+        ? null
+        : "仅本组组长/管理员或需求提交人可生成测试用例";
+    },
   },
   approve_tests: {
     from: ["testcases_generated"],

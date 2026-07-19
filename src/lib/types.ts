@@ -102,6 +102,9 @@ export interface Requirement {
   prUrl: string | null;
   rejectReason: string | null;
   execPlan: ExecPlan | null;
+  // AI 安全门审：'' 未审 / approved 通过 / rejected 拒绝（拒绝后所有 Agent 任务不执行）
+  guardStatus: "" | "approved" | "rejected";
+  guardReason: string;
   createdAt: string;
   updatedAt: string;
 }

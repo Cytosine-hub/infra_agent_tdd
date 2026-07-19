@@ -127,6 +127,15 @@ export default function RequirementDetail({
             </div>
           )}
 
+        {req.guardStatus === "rejected" && (
+          <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
+            🛡️ <strong>安全审查未通过，Agent 任务不会执行</strong>：{req.guardReason}
+            <div className="mt-1 text-xs text-red-500">
+              本平台仅受理对系统内仓库的软件开发需求；如判定有误请修改需求描述后重新提交。
+            </div>
+          </div>
+        )}
+
         {/* 需求内容 */}
         <section className="card mt-5 p-5">
           <h2 className="text-sm font-semibold text-zinc-500">需求描述</h2>

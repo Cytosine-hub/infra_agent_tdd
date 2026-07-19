@@ -107,6 +107,10 @@ function migrate(d: DatabaseSync) {
   if (!rcols.some((c) => c.name === "exec_plan")) {
     d.exec("ALTER TABLE requirements ADD COLUMN exec_plan TEXT");
   }
+  if (!rcols.some((c) => c.name === "guard_status")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN guard_status TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE requirements ADD COLUMN guard_reason TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 // 支持用环境变量预置仓库列表（逗号分隔 owner/repo），也可在设置页维护
@@ -157,6 +161,8 @@ function rowToRequirement(r: any): Requirement {
     prUrl: r.pr_url,
     rejectReason: r.reject_reason,
     execPlan: r.exec_plan ? JSON.parse(r.exec_plan) : null,
+    guardStatus: r.guard_status ?? "",
+    guardReason: r.guard_reason ?? "",
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -213,6 +219,8 @@ export function updateRequirement(id: number, patch: Record<string, unknown>) {
     prUrl: "pr_url",
     rejectReason: "reject_reason",
     execPlan: "exec_plan",
+    guardStatus: "guard_status",
+    guardReason: "guard_reason",
   };
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -295,6 +303,10 @@ export function getTeamById(id: number): { id: number; name: string } | null {
       name: string;
     }) ?? null
   );
+}
+
+export function repoExists(fullName: string): boolean {
+  return Boolean(db().prepare("SELECT 1 FROM repos WHERE full_name = ?").get(fullName));
 }
 
 export function listRepos(): Repo[] {

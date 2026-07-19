@@ -15,6 +15,7 @@ import {
 } from "./db";
 import type { Requirement, TestCase } from "./types";
 import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from "./testcase-gen";
+import { ensureGuardApproved } from "./guard";
 
 const execFileP = promisify(execFile);
 
@@ -219,10 +220,13 @@ async function runTask(taskId: number) {
   const log = fs.openSync(logPath, "a");
   const logLine = (s: string) => fs.writeSync(log, `\n===== [portal] ${s} =====\n`);
 
-  updateAgentTask(task.id, { status: "running", logPath, workspace, step: "clone" });
+  updateAgentTask(task.id, { status: "running", logPath, workspace, step: "guard" });
   addEvent(req.id, "agent_task_started", "system", `本地 Agent 任务 #${task.id}（${task.engine}）启动`);
 
   try {
+    await ensureGuardApproved(req.id); // 防滥用门审
+    updateAgentTask(task.id, { step: "clone" });
+
     // 1. 独立工作区 clone + 分支
     logLine(`clone ${req.repo}`);
     fs.rmSync(workspace, { recursive: true, force: true });
@@ -351,7 +355,10 @@ async function runTestcaseTask(taskId: number) {
   const req = getRequirement(task.requirementId);
   if (!req) throw new Error("需求不存在");
 
-  updateAgentTask(task.id, { status: "running", step: "generate" });
+  updateAgentTask(task.id, { status: "running", step: "guard" });
+  await ensureGuardApproved(req.id); // 防滥用门审：非开发需求/白名单外仓库直接终止
+
+  updateAgentTask(task.id, { step: "generate" });
   addEvent(req.id, "testcase_task_started", "system", `用例生成任务 #${task.id}（${task.engine}）启动`);
 
   let cases: TestCase[];
@@ -425,10 +432,12 @@ async function runReviewTask(taskId: number) {
   const log = fs.openSync(logPath, "a");
   const logLine = (s: string) => fs.writeSync(log, `\n===== [portal] ${s} =====\n`);
 
-  updateAgentTask(task.id, { status: "running", logPath, workspace, step: "clone" });
+  updateAgentTask(task.id, { status: "running", logPath, workspace, step: "guard" });
   addEvent(req.id, "review_started", "system", `Codex 审查任务 #${task.id} 启动（PR #${req.prNumber}）`);
 
   try {
+    await ensureGuardApproved(req.id); // 防滥用门审
+    updateAgentTask(task.id, { step: "clone" });
     logLine(`clone ${req.repo} @ ${branch}`);
     fs.rmSync(workspace, { recursive: true, force: true });
     await sh(wsRoot, log, "git", ["clone", cloneUrl(req.repo), workspace]);
