@@ -280,10 +280,13 @@ async function runTask(taskId: number) {
     logLine(`clone ${req.repo}${isFix ? "（修复迭代，基于既有分支）" : ""}`);
     fs.rmSync(workspace, { recursive: true, force: true });
     await sh(wsRoot, log, "git", ["clone", "--depth", "20", cloneUrl(req.repo), workspace]);
+    let fixBaseSha = "";
     if (isFix) {
-      // 复用远程分支的既有实现
+      // 浅单分支克隆里 origin/<branch> ref 不存在，只能经 FETCH_HEAD 复用既有实现
       await sh(workspace, log, "git", ["fetch", "origin", branch]);
-      await sh(workspace, log, "git", ["checkout", "-B", branch, `origin/${branch}`]);
+      const { stdout } = await execFileP("git", ["rev-parse", "FETCH_HEAD"], { cwd: workspace });
+      fixBaseSha = stdout.trim();
+      await sh(workspace, log, "git", ["checkout", "-B", branch, "FETCH_HEAD"]);
     } else {
       logLine(`checkout ${req.branch}`);
       await sh(workspace, log, "git", ["checkout", "-B", branch]).catch(async () => {
@@ -347,9 +350,9 @@ async function runTask(taskId: number) {
       "commit", "-m", `feat: ${req.title} (#${req.githubIssueNumber})`,
     ]).catch(() => {/* 无未提交变更时忽略 */});
 
-    // 确认有实际新提交。基准：初次开发对比默认分支；修复迭代对比既有分支（否则总判为有提交）
+    // 确认有实际新提交。基准：初次开发对比默认分支；修复迭代对比既有分支 tip（FETCH_HEAD sha）
     const baseBranch = await getDefaultBranch(req.repo);
-    const commitBase = isFix ? `origin/${branch}` : `origin/${baseBranch}`;
+    const commitBase = isFix ? fixBaseSha : `origin/${baseBranch}`;
     if (!isFix) await sh(workspace, log, "git", ["fetch", "origin", baseBranch]);
     const { stdout } = await execFileP("git", ["rev-list", "--count", `${commitBase}..HEAD`], {
       cwd: workspace,
