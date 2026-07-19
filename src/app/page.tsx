@@ -2,23 +2,47 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { listRequirements, listTeams } from "@/lib/db";
 import { currentUser } from "@/lib/session";
-import { STATUSES, STATUS_LABELS, type Requirement, type Status } from "@/lib/types";
+import { STATUS_LABELS, type Requirement, type Status } from "@/lib/types";
 import StatusBadge from "@/components/StatusBadge";
 import TeamFilter from "@/components/TeamFilter";
 
 export const dynamic = "force-dynamic";
 
-// 看板列：把细粒度状态归并为 5 个泳道，一眼看清每个需求走到哪一步
+// 看板列：只展示正在推进的需求；被驳回/安全审查未通过的收进底部「已驳回」区
 const LANES: { title: string; statuses: Status[] }[] = [
-  { title: "需求审核", statuses: ["submitted", "requirement_rejected"] },
-  {
-    title: "测试用例",
-    statuses: ["requirement_approved", "testcases_generated", "testcases_rejected"],
-  },
+  { title: "需求审核", statuses: ["submitted"] },
+  { title: "测试用例", statuses: ["requirement_approved", "testcases_generated"] },
   { title: "待开发", statuses: ["testcases_approved"] },
   { title: "开发 / 审查", statuses: ["developing", "in_review"] },
   { title: "已完成", statuses: ["done"] },
 ];
+
+// 统计条只展示活跃流程状态（驳回/终止不计入）
+const ACTIVE_STATUSES: Status[] = [
+  "submitted",
+  "requirement_approved",
+  "testcases_generated",
+  "testcases_approved",
+  "developing",
+  "in_review",
+  "done",
+];
+
+// 已终止：被驳回（需求/用例）或安全审查未通过——退出主流程，收进折叠区
+function isArchived(r: Requirement): boolean {
+  return (
+    r.guardStatus === "rejected" ||
+    r.status === "requirement_rejected" ||
+    r.status === "testcases_rejected"
+  );
+}
+
+function archiveNote(r: Requirement): string {
+  if (r.guardStatus === "rejected") return `🛡️ 安全审查未通过：${r.guardReason}`;
+  if (r.status === "requirement_rejected") return `需求驳回：${r.rejectReason ?? "无原因"}`;
+  if (r.status === "testcases_rejected") return `用例驳回：${r.rejectReason ?? "无原因"}`;
+  return "";
+}
 
 export default async function Dashboard({
   searchParams,
@@ -35,7 +59,9 @@ export default async function Dashboard({
   // 管理员：按下拉框选择的岗位筛选；其他角色：「只看本岗位」开关
   const mineOnly = !isAdmin && params.mine === "1";
   const teamFilter = isAdmin ? (params.team ?? "") : mineOnly ? user.team : "";
-  const requirements = teamFilter ? all.filter((r) => r.team === teamFilter) : all;
+  const scoped = teamFilter ? all.filter((r) => r.team === teamFilter) : all;
+  const requirements = scoped.filter((r) => !isArchived(r));
+  const archived = scoped.filter(isArchived);
   const teams = [...new Set([...listTeams().map((t) => t.name), ...all.map((r) => r.team)])];
   const countBy = (s: Status) => requirements.filter((r) => r.status === s).length;
 
@@ -80,8 +106,8 @@ export default async function Dashboard({
         </div>
       </div>
 
-      <div className="mt-6 grid grid-cols-3 gap-3 sm:grid-cols-9">
-        {STATUSES.map((s) => (
+      <div className="mt-6 grid grid-cols-4 gap-3 sm:grid-cols-7">
+        {ACTIVE_STATUSES.map((s) => (
           <div key={s} className="card px-3 py-2.5 text-center">
             <div className="text-lg font-semibold">{countBy(s)}</div>
             <div className="mt-0.5 text-xs text-zinc-500">{STATUS_LABELS[s]}</div>
@@ -126,15 +152,36 @@ export default async function Dashboard({
           );
         })}
       </div>
+
+      {archived.length > 0 && (
+        <details className="mt-6 rounded-xl border border-zinc-200 bg-white">
+          <summary className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-semibold text-zinc-600 select-none">
+            已驳回 / 已终止
+            <span className="rounded-full bg-zinc-200 px-2 py-0.5 text-xs text-zinc-600">
+              {archived.length}
+            </span>
+            <span className="text-xs font-normal text-zinc-400">
+              （被驳回或安全审查未通过，已退出主流程；点开查看）
+            </span>
+          </summary>
+          <div className="grid gap-2 border-t border-zinc-100 p-3 sm:grid-cols-2 lg:grid-cols-3">
+            {archived.map((r) => (
+              <RequirementCard key={r.id} r={r} note={archiveNote(r)} />
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
 
-function RequirementCard({ r }: { r: Requirement }) {
+function RequirementCard({ r, note }: { r: Requirement; note?: string }) {
   return (
     <Link
       href={`/requirements/${r.id}`}
-      className="card block p-2.5 transition hover:border-zinc-400 hover:shadow"
+      className={`card block p-2.5 transition hover:border-zinc-400 hover:shadow ${
+        note ? "opacity-75 hover:opacity-100" : ""
+      }`}
     >
       <div className="flex items-start justify-between gap-2">
         <span className="text-xs text-zinc-400">
@@ -159,6 +206,7 @@ function RequirementCard({ r }: { r: Requirement }) {
         </span>
         <span>{r.createdBy}</span>
       </div>
+      {note && <div className="mt-1.5 line-clamp-2 text-[11px] text-red-600">{note}</div>}
     </Link>
   );
 }
