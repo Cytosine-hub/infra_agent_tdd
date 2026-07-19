@@ -7,9 +7,12 @@
 ```bash
 npm install
 npm run build
-npm start          # 生产模式，默认 http://localhost:3000
-# 或开发模式：npm run dev
+npm start          # 门户 Web（默认 http://localhost:3000）
+npm run runner     # 本地 Agent 执行守护进程（另开终端/后台常驻）
+# 开发模式：npm run dev + npm run runner
 ```
+
+门户与 runner 是两个独立进程：门户只负责 Web 与任务入队，runner 负责执行用例生成/开发/审查任务——**重启门户不会中断进行中的 Agent 任务**。
 
 无需任何外部配置即可运行：数据存在本地 SQLite（`./data/portal.db`），首次启动自动建表并写入各小组演示账号（组长/组员），登录页选择账号即可体验完整审批流。管理员登录后可在「设置」中维护目标仓库列表与账号/角色（组员、组长、管理员）。
 

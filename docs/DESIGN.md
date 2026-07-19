@@ -170,6 +170,32 @@ requirement_rejected（可重新审核）              testcases_approved   test
 - 推理强度落地：claude 用 `MAX_THINKING_TOKENS`（16000/31999），codex 用 `model_reasoning_effort`。
 - 重新触发沿用已保存方案；任务卡片展示实际使用的引擎/模型/强度。
 
+### v6（2026-07-19）：Codex 承担用例生成与 PR 审查
+
+AI 环节全景（均为本地 CLI，不依赖云端 API Key）：
+
+| 环节 | 引擎 | 说明 |
+|------|------|------|
+| 测试用例生成 | **Codex**（默认） | 兜底链：codex → Anthropic API（若配 Key）→ 本地模板 |
+| 执行方案评估 | Claude（haiku） | 推荐引擎/模型/推理强度，人工可改 |
+| 需求开发 | Claude / Codex | 按执行方案调度 |
+| PR 代码审查 | **Codex**（默认） | 与开发引擎交叉互审，避免同模型自审 |
+
+- PR 审查：开发任务建完 PR 后**自动触发**（`AGENT_AUTO_REVIEW=0` 关闭），组长也可在详情页手动
+  「🧐 发起/重新审查」；审查在独立工作区 checkout PR 分支，按 agent.md + 验收用例逐条核对，
+  结论（✅ 建议合并 / ⚠️ 建议修改 + 分条建议）自动评论到 PR 并展示在门户任务卡片中。
+- `agent_tasks` 表扩展 kind（develop/review）与 result 字段；审查引擎可用 `AGENT_REVIEW_ENGINE` 覆盖。
+- 坑位记录：codex exec 会等待 stdin 关闭，必须以 `stdio: ignore` 方式启动，否则挂起直到超时。
+
+### v7（2026-07-19）：执行器拆分为独立 runner + 监控全景
+
+- **runner 守护进程**（`npm run runner`，`runner/daemon.ts`）：门户只入队（agent_tasks 表 status=queued），
+  runner 轮询认领并串行执行。门户重启不中断任务（已实测：任务运行中重启门户，任务照常完成）；
+  runner 重启会把孤儿任务标记失败（按 pid 探活），门户可一键重触发。
+- **测试用例生成纳入任务体系**：kind=testcases，与开发/审查一样有引擎、状态、步骤、结果记录。
+- **Agent 监控页重做**：全量本地任务表——任务类型（用例生成/开发/PR 审查）、
+  **引擎/模型/推理强度**、状态+当前步骤、失败原因、起止时间，失败置顶，10 秒刷新。
+
 ## 6. 后续演进
 
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。

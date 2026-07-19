@@ -53,10 +53,12 @@ export function db(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS agent_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       requirement_id INTEGER NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'develop',
       engine TEXT NOT NULL DEFAULT 'claude',
       model TEXT NOT NULL DEFAULT '',
       effort TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'queued',
+      result TEXT,
       step TEXT NOT NULL DEFAULT '',
       error TEXT,
       pid INTEGER,
@@ -96,6 +98,10 @@ function migrate(d: DatabaseSync) {
   if (tcols.length > 0 && !tcols.some((c) => c.name === "model")) {
     d.exec("ALTER TABLE agent_tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''");
     d.exec("ALTER TABLE agent_tasks ADD COLUMN effort TEXT NOT NULL DEFAULT ''");
+  }
+  if (tcols.length > 0 && !tcols.some((c) => c.name === "kind")) {
+    d.exec("ALTER TABLE agent_tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'develop'");
+    d.exec("ALTER TABLE agent_tasks ADD COLUMN result TEXT");
   }
   const rcols = d.prepare("PRAGMA table_info(requirements)").all() as { name: string }[];
   if (!rcols.some((c) => c.name === "exec_plan")) {
@@ -322,12 +328,16 @@ function rowToUser(r: any): User {
 
 /* ---------- 本地 Agent 任务 ---------- */
 
+export type AgentTaskKind = "develop" | "review" | "testcases";
+
 export interface AgentTaskRow {
   id: number;
   requirementId: number;
+  kind: AgentTaskKind;
   engine: string;
   model: string;
   effort: string;
+  result: string | null;
   status: "queued" | "running" | "succeeded" | "failed";
   step: string;
   error: string | null;
@@ -342,9 +352,11 @@ function rowToTask(r: any): AgentTaskRow {
   return {
     id: r.id,
     requirementId: r.requirement_id,
+    kind: r.kind ?? "develop",
     engine: r.engine,
     model: r.model ?? "",
     effort: r.effort ?? "",
+    result: r.result,
     status: r.status,
     step: r.step,
     error: r.error,
@@ -360,11 +372,14 @@ export function createAgentTask(
   requirementId: number,
   engine: string,
   model = "",
-  effort = ""
+  effort = "",
+  kind: AgentTaskKind = "develop"
 ): AgentTaskRow {
   const res = db()
-    .prepare("INSERT INTO agent_tasks (requirement_id, engine, model, effort) VALUES (?, ?, ?, ?)")
-    .run(requirementId, engine, model, effort);
+    .prepare(
+      "INSERT INTO agent_tasks (requirement_id, engine, model, effort, kind) VALUES (?, ?, ?, ?, ?)"
+    )
+    .run(requirementId, engine, model, effort, kind);
   return getAgentTask(Number(res.lastInsertRowid))!;
 }
 
@@ -373,10 +388,15 @@ export function getAgentTask(id: number): AgentTaskRow | null {
   return r ? rowToTask(r) : null;
 }
 
-export function latestAgentTask(requirementId: number): AgentTaskRow | null {
+export function latestAgentTask(
+  requirementId: number,
+  kind: AgentTaskKind = "develop"
+): AgentTaskRow | null {
   const r = db()
-    .prepare("SELECT * FROM agent_tasks WHERE requirement_id = ? ORDER BY id DESC LIMIT 1")
-    .get(requirementId);
+    .prepare(
+      "SELECT * FROM agent_tasks WHERE requirement_id = ? AND kind = ? ORDER BY id DESC LIMIT 1"
+    )
+    .get(requirementId, kind);
   return r ? rowToTask(r) : null;
 }
 
@@ -387,9 +407,41 @@ export function listActiveAgentTasks(): AgentTaskRow[] {
   return rows.map(rowToTask);
 }
 
+// 守护进程认领下一个排队任务（单 runner 场景，无并发竞争）
+export function claimNextQueuedTask(): AgentTaskRow | null {
+  const r = db()
+    .prepare("SELECT * FROM agent_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1")
+    .get();
+  if (!r) return null;
+  const task = rowToTask(r);
+  db()
+    .prepare("UPDATE agent_tasks SET status = 'running', step = 'claimed' WHERE id = ?")
+    .run(task.id);
+  return getAgentTask(task.id);
+}
+
+// 守护进程启动时，把上次异常退出遗留的 running 任务标记为失败
+export function failStaleRunningTasks(isAlive: (pid: number | null) => boolean): number {
+  const rows = db().prepare("SELECT * FROM agent_tasks WHERE status = 'running'").all() as any[];
+  let n = 0;
+  for (const r of rows.map(rowToTask)) {
+    if (!isAlive(r.pid)) {
+      db()
+        .prepare(
+          "UPDATE agent_tasks SET status = 'failed', error = '执行进程中断（runner 重启）', finished_at = datetime('now','localtime') WHERE id = ?"
+        )
+        .run(r.id);
+      n++;
+    }
+  }
+  return n;
+}
+
 export function updateAgentTask(
   id: number,
-  patch: Partial<Pick<AgentTaskRow, "status" | "step" | "error" | "pid" | "logPath" | "workspace">>
+  patch: Partial<
+    Pick<AgentTaskRow, "status" | "step" | "error" | "pid" | "logPath" | "workspace" | "result">
+  >
 ) {
   const colMap: Record<string, string> = {
     status: "status",
@@ -398,6 +450,7 @@ export function updateAgentTask(
     pid: "pid",
     logPath: "log_path",
     workspace: "workspace",
+    result: "result",
   };
   const sets: string[] = [];
   const vals: unknown[] = [];

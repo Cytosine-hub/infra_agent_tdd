@@ -4,14 +4,18 @@ import { addEvent, getRequirement, updateRequirement } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { canPerform, nextTestApprovalState, type Action } from "@/lib/workflow";
-import { generateTestCases } from "@/lib/testcase-gen";
 import {
   createIssueForRequirement,
   githubConfigured,
   mergePullRequest,
   syncIssueState,
 } from "@/lib/github";
-import { enqueueDevTask, ENGINES } from "@/lib/agent-runner";
+import {
+  enqueueDevTask,
+  enqueueReviewTask,
+  enqueueTestcaseTask,
+  ENGINES,
+} from "@/lib/agent-runner";
 import { STATUS_LABELS, type TestCase } from "@/lib/types";
 
 const BodySchema = z.object({
@@ -23,6 +27,7 @@ const BodySchema = z.object({
     "reject_tests",
     "start_dev",
     "retrigger_dev",
+    "review_pr",
     "merge_pr",
     "sync_github",
     "save_tests",
@@ -94,19 +99,9 @@ export const POST = apiHandler(
         break;
 
       case "generate_tests": {
-        const { testCases: generated, source } = await generateTestCases(requirement);
-        updateRequirement(id, {
-          status: "testcases_generated",
-          testCases: generated as TestCase[],
-          leadApprovedTests: 0,
-          requesterApprovedTests: 0,
-        });
-        addEvent(
-          id,
-          "tests_generated",
-          user.username,
-          source === "claude" ? "Claude 生成测试用例" : "本地模板生成测试用例（未配置 ANTHROPIC_API_KEY）"
-        );
+        // 异步：入队用例生成任务（默认 codex），由 runner 守护进程执行
+        const t = enqueueTestcaseTask(id, parsed.data.engine);
+        addEvent(id, "testcase_task_enqueued", user.username, `用例生成任务已入队（${t.engine}）`);
         break;
       }
 
@@ -175,6 +170,13 @@ export const POST = apiHandler(
           user.username,
           `重新触发本地 Agent 开发（${engine}${model ? `/${model}` : ""}${effort ? `/${effort}` : ""}）`
         );
+        break;
+      }
+
+      case "review_pr": {
+        if (!githubConfigured()) return badRequest("GitHub 未配置");
+        const t = enqueueReviewTask(id, parsed.data.engine);
+        addEvent(id, "review_requested", user.username, `发起 PR 审查（${t.engine}）`);
         break;
       }
 

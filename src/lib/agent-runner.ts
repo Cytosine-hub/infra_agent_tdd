@@ -13,8 +13,8 @@ import {
   updateRequirement,
   type AgentTaskRow,
 } from "./db";
-import type { Requirement } from "./types";
-import { testCasesToMarkdown } from "./testcase-gen";
+import type { Requirement, TestCase } from "./types";
+import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from "./testcase-gen";
 
 const execFileP = promisify(execFile);
 
@@ -117,21 +117,54 @@ function buildPrompt(req: Requirement): string {
   ].join("\n");
 }
 
-// 入队并异步启动（不阻塞 API 请求）
+// 任务只入队，执行由独立的 runner 守护进程（npm run runner）认领。
+// 门户重启不再中断任务；runner 重启会把孤儿任务标记失败，可一键重触发。
+function assertNoActiveTask(requirementId: number, kind: "develop" | "review" | "testcases") {
+  const last = latestAgentTask(requirementId, kind);
+  if (
+    last &&
+    (last.status === "queued" || (last.status === "running" && pidAlive(last.pid)))
+  ) {
+    throw new Error(`该需求已有排队/进行中的${kind === "develop" ? "开发" : kind === "review" ? "审查" : "用例生成"}任务（#${last.id}）`);
+  }
+}
+
 export function enqueueDevTask(
   requirementId: number,
   engine: string,
   opts: ExecOptions = {}
 ): AgentTaskRow {
-  const last = latestAgentTask(requirementId);
-  if (last && (last.status === "queued" || last.status === "running") && pidAlive(last.pid)) {
-    throw new Error(`该需求已有进行中的 Agent 任务（#${last.id}），请等待其结束`);
+  assertNoActiveTask(requirementId, "develop");
+  return createAgentTask(requirementId, engine, opts.model ?? "", opts.effort ?? "");
+}
+
+// PR 审查任务入队：默认 codex（可用 AGENT_REVIEW_ENGINE 覆盖），与开发引擎交叉互审
+export function enqueueReviewTask(requirementId: number, engine?: string): AgentTaskRow {
+  const reviewEngine = engine ?? process.env.AGENT_REVIEW_ENGINE ?? "codex";
+  if (!ENGINES[reviewEngine]) throw new Error(`不支持的审查引擎：${reviewEngine}`);
+  assertNoActiveTask(requirementId, "review");
+  return createAgentTask(requirementId, reviewEngine, "", "", "review");
+}
+
+// 测试用例生成任务入队：默认 codex（TESTCASE_ENGINE 覆盖）
+export function enqueueTestcaseTask(requirementId: number, engine?: string): AgentTaskRow {
+  const genEngine = engine ?? process.env.TESTCASE_ENGINE ?? "codex";
+  if (!ENGINES[genEngine]) throw new Error(`不支持的用例生成引擎：${genEngine}`);
+  assertNoActiveTask(requirementId, "testcases");
+  return createAgentTask(requirementId, genEngine, "", "", "testcases");
+}
+
+// runner 守护进程的任务分发入口
+export async function executeTask(taskId: number): Promise<void> {
+  const task = getAgentTask(taskId);
+  if (!task) throw new Error(`任务 #${taskId} 不存在`);
+  try {
+    if (task.kind === "develop") await runTask(taskId);
+    else if (task.kind === "review") await runReviewTask(taskId);
+    else await runTestcaseTask(taskId);
+  } catch (err) {
+    updateAgentTask(taskId, { status: "failed", error: String(err), pid: null });
   }
-  const task = createAgentTask(requirementId, engine, opts.model ?? "", opts.effort ?? "");
-  void runTask(task.id).catch((err) => {
-    updateAgentTask(task.id, { status: "failed", error: String(err) });
-  });
-  return task;
 }
 
 export function pidAlive(pid: number | null): boolean {
@@ -277,10 +310,177 @@ async function runTask(taskId: number) {
     updateAgentTask(task.id, { status: "succeeded", step: "done", pid: null });
     addEvent(req.id, "agent_task_succeeded", "system", `Agent 任务 #${task.id} 完成，已创建 PR #${prNumber}`);
     logLine(`done: PR #${prNumber}`);
+
+    // 开发完成后自动触发 PR 审查（默认 codex；AGENT_AUTO_REVIEW=0 关闭）
+    if (process.env.AGENT_AUTO_REVIEW !== "0") {
+      try {
+        enqueueReviewTask(req.id);
+      } catch (e) {
+        console.error("自动触发审查失败:", e);
+      }
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     updateAgentTask(task.id, { status: "failed", error: message, pid: null });
     addEvent(req.id, "agent_task_failed", "system", `Agent 任务 #${task.id} 失败：${message}`);
+    logLine(`FAILED: ${message}`);
+  } finally {
+    fs.closeSync(log);
+  }
+}
+
+// 测试用例生成任务：优先用任务指定引擎（默认 codex），失败退回本地模板
+async function runTestcaseTask(taskId: number) {
+  const task = getAgentTask(taskId);
+  if (!task) throw new Error("任务不存在");
+  const req = getRequirement(task.requirementId);
+  if (!req) throw new Error("需求不存在");
+
+  updateAgentTask(task.id, { status: "running", step: "generate" });
+  addEvent(req.id, "testcase_task_started", "system", `用例生成任务 #${task.id}（${task.engine}）启动`);
+
+  let cases: TestCase[];
+  let source = task.engine;
+  try {
+    cases = await generateWithEngine(req, task.engine);
+  } catch (err) {
+    console.error("引擎生成用例失败，回退模板:", err);
+    cases = generateWithTemplate(req);
+    source = "template";
+  }
+
+  updateRequirement(req.id, {
+    status: "testcases_generated",
+    testCases: cases,
+    leadApprovedTests: 0,
+    requesterApprovedTests: 0,
+  });
+  updateAgentTask(task.id, {
+    status: "succeeded",
+    step: "done",
+    result: `生成 ${cases.length} 条用例（来源：${source}）`,
+  });
+  addEvent(
+    req.id,
+    "tests_generated",
+    "system",
+    source === "template"
+      ? `本地模板生成 ${cases.length} 条用例（${task.engine} 生成失败的兜底）`
+      : `本地 ${source} 生成 ${cases.length} 条测试用例`
+  );
+}
+
+function buildReviewPrompt(req: Requirement): string {
+  return [
+    `你是代码审查员。当前工作区已检出 PR 分支（${req.branch}），请审查该 PR 的变更。`,
+    ``,
+    `# 需求背景（GitHub Issue #${req.githubIssueNumber}）`,
+    `标题：${req.title}`,
+    `需求描述：${req.description}`,
+    ``,
+    `## 验收测试用例`,
+    testCasesToMarkdown(req.testCases ?? []),
+    ``,
+    `# 审查步骤`,
+    `1. 运行 \`git diff origin/main...HEAD\` 查看全部变更。`,
+    `2. 阅读仓库根目录 agent.md，核对变更是否符合开发规范（模块自包含、不改他人文件等）。`,
+    `3. 核对每条验收测试用例是否有对应的自动化测试且断言正确。`,
+    `4. 检查明显缺陷、安全问题、对现有功能的破坏。`,
+    ``,
+    `# 输出要求（你的最终回答会被直接贴到 PR 评论）`,
+    `用中文 Markdown 输出：第一行为结论「✅ 建议合并」或「⚠️ 建议修改」；`,
+    `之后分条列出发现的问题（文件:行号 + 说明 + 建议），没有问题则简述验证了哪些点。不要修改任何代码。`,
+  ].join("\n");
+}
+
+async function runReviewTask(taskId: number) {
+  const task = getAgentTask(taskId);
+  if (!task) throw new Error("任务不存在");
+  const req = getRequirement(task.requirementId);
+  if (!req) throw new Error("需求不存在");
+  if (!req.branch || !req.prNumber) throw new Error("该需求尚无 PR，无法审查");
+  const branch = req.branch;
+
+  const wsRoot = path.join(DATA_DIR, "workspaces");
+  const workspace = path.join(wsRoot, `req-${req.id}-review-${task.id}`);
+  const logDir = path.join(DATA_DIR, "agent-logs");
+  fs.mkdirSync(wsRoot, { recursive: true });
+  fs.mkdirSync(logDir, { recursive: true });
+  const logPath = path.join(logDir, `task-${task.id}.log`);
+  const log = fs.openSync(logPath, "a");
+  const logLine = (s: string) => fs.writeSync(log, `\n===== [portal] ${s} =====\n`);
+
+  updateAgentTask(task.id, { status: "running", logPath, workspace, step: "clone" });
+  addEvent(req.id, "review_started", "system", `Codex 审查任务 #${task.id} 启动（PR #${req.prNumber}）`);
+
+  try {
+    logLine(`clone ${req.repo} @ ${branch}`);
+    fs.rmSync(workspace, { recursive: true, force: true });
+    await sh(wsRoot, log, "git", ["clone", cloneUrl(req.repo), workspace]);
+    await sh(workspace, log, "git", ["checkout", branch]);
+
+    updateAgentTask(task.id, { step: "review" });
+    logLine(`run ${task.engine} review`);
+    const engine = ENGINES[task.engine];
+    const outFile = path.join(workspace, ".review-result.md");
+    const prompt = buildReviewPrompt(req);
+    // codex 用 --output-last-message 捕获最终结论；claude -p 的 stdout 即结论
+    let result: string;
+    if (task.engine === "codex") {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          engine.cmd,
+          ["exec", "--full-auto", "--output-last-message", outFile, prompt],
+          { cwd: workspace, env: { ...process.env }, stdio: ["ignore", log, log] }
+        );
+        updateAgentTask(task.id, { pid: child.pid ?? null });
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error("审查超时"));
+        }, TIMEOUT_MS);
+        child.on("error", (e) => (clearTimeout(timer), reject(e)));
+        child.on("exit", (code) =>
+          code === 0
+            ? (clearTimeout(timer), resolve())
+            : (clearTimeout(timer), reject(new Error(`codex 退出码 ${code}`)))
+        );
+      });
+      result = fs.readFileSync(outFile, "utf-8");
+      fs.rmSync(outFile, { force: true });
+    } else {
+      const { stdout } = await execFileP(engine.cmd, ["-p", prompt, "--dangerously-skip-permissions"], {
+        cwd: workspace,
+        timeout: TIMEOUT_MS,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      result = stdout;
+    }
+    result = result.trim();
+    if (!result) throw new Error("审查无输出");
+
+    // 建议写回 PR 评论
+    updateAgentTask(task.id, { step: "comment" });
+    const [owner, name] = req.repo.split("/");
+    const gh = new Octokit({ auth: process.env.GITHUB_TOKEN });
+    await gh.issues.createComment({
+      owner,
+      repo: name,
+      issue_number: req.prNumber,
+      body: `## 🧐 自动代码审查（${task.engine}）\n\n${result}\n\n---\n_由需求门户本地 Agent 审查生成 · 门户需求 #${req.id}_`,
+    });
+
+    updateAgentTask(task.id, {
+      status: "succeeded",
+      step: "done",
+      pid: null,
+      result: result.slice(0, 4000),
+    });
+    addEvent(req.id, "review_done", "system", `审查完成，建议已评论到 PR #${req.prNumber}`);
+    logLine("review done");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    updateAgentTask(task.id, { status: "failed", error: message, pid: null });
+    addEvent(req.id, "review_failed", "system", `审查任务 #${task.id} 失败：${message}`);
     logLine(`FAILED: ${message}`);
   } finally {
     fs.closeSync(log);

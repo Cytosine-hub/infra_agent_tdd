@@ -28,9 +28,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <Link href="/" className="hover:text-zinc-900">
                   工作台
                 </Link>
-                <Link href="/requirements/new" className="hover:text-zinc-900">
-                  提交需求
-                </Link>
                 <Link href="/agents" className="hover:text-zinc-900">
                   Agent 监控
                 </Link>

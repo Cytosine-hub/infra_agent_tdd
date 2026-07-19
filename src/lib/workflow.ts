@@ -9,6 +9,7 @@ export type Action =
   | "reject_tests"
   | "start_dev"
   | "retrigger_dev"
+  | "review_pr"
   | "merge_pr"
   | "mark_in_review"
   | "mark_done";
@@ -65,6 +66,11 @@ export const ACTION_RULES: Record<Action, ActionRule> = {
   },
   retrigger_dev: {
     from: ["developing", "in_review"],
+    roles: ["lead", "admin"],
+    guard: sameTeamLead,
+  },
+  review_pr: {
+    from: ["in_review"],
     roles: ["lead", "admin"],
     guard: sameTeamLead,
   },

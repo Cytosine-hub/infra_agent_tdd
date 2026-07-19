@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { Requirement, RequirementEvent, TestCase, User } from "@/lib/types";
 import StatusBadge from "@/components/StatusBadge";
 import AgentRuns from "@/components/AgentRuns";
@@ -16,6 +16,7 @@ type ActionName =
   | "reject_tests"
   | "start_dev"
   | "retrigger_dev"
+  | "review_pr"
   | "merge_pr"
   | "sync_github"
   | "save_tests";
@@ -36,6 +37,16 @@ export default function RequirementDetail({
   const [editing, setEditing] = useState(false);
   const [draftCases, setDraftCases] = useState<TestCase[]>([]);
   const [evaluating, setEvaluating] = useState(false);
+
+  // 后台任务完成后刷新需求与时间线（useCallback 保持引用稳定，避免子组件轮询抖动）
+  const refresh = useCallback(async () => {
+    const res = await fetch(`/api/requirements/${initialRequirement.id}`);
+    if (res.ok) {
+      const data = await res.json();
+      setReq(data.requirement);
+      setEvents(data.events);
+    }
+  }, [initialRequirement.id]);
 
   async function evaluatePlan(): Promise<ExecPlan | null> {
     setEvaluating(true);
@@ -237,16 +248,16 @@ export default function RequirementDetail({
           </section>
         )}
 
-        {/* 本地 Agent 任务监控 */}
-        {(req.status === "developing" || req.status === "in_review" || req.status === "done") &&
-          req.githubIssueNumber && (
-            <LocalAgentTask
-              requirementId={req.id}
-              canRetrigger={isLead && req.status !== "done"}
-              onRetrigger={() => act("retrigger_dev")}
-              busy={busy === "retrigger_dev"}
-            />
-          )}
+        {/* 本地 Agent 任务监控（用例生成 / 开发 / 审查，无任务时自动隐藏） */}
+        <LocalAgentTask
+          requirementId={req.id}
+          canRetrigger={isLead && (req.status === "developing" || req.status === "in_review")}
+          onRetrigger={() => act("retrigger_dev")}
+          canReview={isLead && req.status === "in_review"}
+          onReview={() => act("review_pr")}
+          busy={busy === "retrigger_dev" || busy === "review_pr"}
+          onTaskFinished={refresh}
+        />
 
         {/* GitHub Actions 运行监控（CI / 审查） */}
         {(req.status === "developing" || req.status === "in_review" || req.status === "done") &&
