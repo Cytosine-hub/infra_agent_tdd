@@ -40,6 +40,7 @@ export default function RequirementDetail({
   const [busy, setBusy] = useState<ActionName | null>(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
+  const [editingReq, setEditingReq] = useState(false);
   const [draftCases, setDraftCases] = useState<TestCase[]>([]);
   const [evaluating, setEvaluating] = useState(false);
   const [genActive, setGenActive] = useState(false); // 用例生成任务进行中
@@ -235,17 +236,40 @@ export default function RequirementDetail({
           </div>
         )}
 
-        {/* 需求内容 */}
-        <section className="card mt-5 p-5">
-          <h2 className="text-sm font-semibold text-zinc-500">需求描述</h2>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{req.description}</p>
-          {req.testScenarios && (
-            <>
-              <h2 className="mt-5 text-sm font-semibold text-zinc-500">需求方核心测试场景</h2>
-              <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{req.testScenarios}</p>
-            </>
-          )}
-        </section>
+        {/* 需求内容（待审核/被驳回时提交人与组长可修改；驳回态保存即重新提交） */}
+        {editingReq ? (
+          <RequirementEditor
+            req={req}
+            onCancel={() => setEditingReq(false)}
+            onSaved={(updated) => {
+              setReq(updated);
+              setEditingReq(false);
+              refresh();
+            }}
+          />
+        ) : (
+          <section className="card mt-5 p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-zinc-500">需求描述</h2>
+              {(isRequester || isLead) &&
+                ["submitted", "requirement_rejected"].includes(req.status) && (
+                  <button
+                    className="btn-secondary !px-2.5 !py-1 text-xs"
+                    onClick={() => setEditingReq(true)}
+                  >
+                    ✏️ 修改需求{req.status === "requirement_rejected" ? "并重新提交" : ""}
+                  </button>
+                )}
+            </div>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{req.description}</p>
+            {req.testScenarios && (
+              <>
+                <h2 className="mt-5 text-sm font-semibold text-zinc-500">需求方核心测试场景</h2>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{req.testScenarios}</p>
+              </>
+            )}
+          </section>
+        )}
 
         {/* 附件 */}
         <AttachmentsCard
@@ -258,7 +282,11 @@ export default function RequirementDetail({
           requirementId={req.id}
           mockupTask={mockupTask}
           canGenerate={isRequester || isLead}
-          onGenerate={() => act("generate_mockup")}
+          onGenerate={() => {
+            const extra = window.prompt("补充要求（可选，如：改为深色主题、突出图表区；直接确定则按需求生成）：");
+            if (extra === null) return;
+            act("generate_mockup", extra ? { extra } : {});
+          }}
           busy={busy === "generate_mockup"}
         />
 
@@ -429,7 +457,11 @@ export default function RequirementDetail({
                   genActive || busy === "generate_tests" ? "🤖 测试用例生成中…" : "🤖 生成测试用例"
                 }
                 busy={genActive || busy === "generate_tests"}
-                onClick={() => act("generate_tests")}
+                onClick={() => {
+                  const extra = window.prompt("补充要求（可选，直接确定则按需求内容生成）：");
+                  if (extra === null) return;
+                  act("generate_tests", extra ? { extra } : {});
+                }}
               />
             )}
 
@@ -445,7 +477,11 @@ export default function RequirementDetail({
                 <button
                   className="btn-secondary"
                   disabled={busy !== null || genActive}
-                  onClick={() => act("generate_tests")}
+                  onClick={() => {
+                    const extra = window.prompt("补充要求（可选，如：增加并发场景用例；直接确定则按原需求重新生成）：");
+                    if (extra === null) return;
+                    act("generate_tests", extra ? { extra } : {});
+                  }}
                 >
                   {genActive ? "生成中…" : "🔄 重新生成"}
                 </button>
@@ -658,5 +694,149 @@ function TestCaseEditor({
         </button>
       </div>
     </div>
+  );
+}
+
+// 需求内容编辑器：待审核状态可修改；被驳回状态保存后自动重新提交审核
+function RequirementEditor({
+  req,
+  onCancel,
+  onSaved,
+}: {
+  req: Requirement;
+  onCancel: () => void;
+  onSaved: (updated: Requirement) => void;
+}) {
+  const [form, setForm] = useState({
+    title: req.title,
+    team: req.team,
+    repo: req.repo,
+    priority: req.priority,
+    description: req.description,
+    testScenarios: req.testScenarios,
+  });
+  const [teams, setTeams] = useState<string[]>([]);
+  const [repos, setRepos] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    fetch("/api/teams")
+      .then((r) => r.json())
+      .then((d) => setTeams((d.teams ?? []).map((t: { name: string }) => t.name)));
+    fetch("/api/repos?forUser=1")
+      .then((r) => r.json())
+      .then((d) => setRepos((d.repos ?? []).map((x: { fullName: string }) => x.fullName)));
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    setErr("");
+    const res = await fetch(`/api/requirements/${req.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const data = await res.json();
+    setSaving(false);
+    if (!res.ok) {
+      setErr(data.error ?? "保存失败");
+      return;
+    }
+    onSaved(data.requirement);
+  }
+
+  return (
+    <section className="card mt-5 flex flex-col gap-4 border-sky-200 p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-sky-700">✏️ 修改需求</h2>
+        {req.status === "requirement_rejected" && (
+          <span className="text-xs text-amber-600">保存后将重新提交审核</span>
+        )}
+      </div>
+      <div>
+        <label className="label">标题 *</label>
+        <input
+          className="input"
+          value={form.title}
+          onChange={(e) => setForm({ ...form, title: e.target.value })}
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <label className="label">小组</label>
+          <select
+            className="input"
+            value={form.team}
+            onChange={(e) => setForm({ ...form, team: e.target.value })}
+          >
+            {[form.team, ...teams.filter((t) => t !== form.team)].map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">仓库</label>
+          <select
+            className="input"
+            value={form.repo}
+            onChange={(e) => setForm({ ...form, repo: e.target.value })}
+          >
+            {[form.repo, ...repos.filter((r) => r !== form.repo)].map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">优先级</label>
+          <select
+            className="input"
+            value={form.priority}
+            onChange={(e) => setForm({ ...form, priority: e.target.value as Requirement["priority"] })}
+          >
+            <option value="P0">P0 - 紧急</option>
+            <option value="P1">P1 - 高</option>
+            <option value="P2">P2 - 普通</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="label">需求描述 *</label>
+        <textarea
+          className="input min-h-32"
+          value={form.description}
+          onChange={(e) => setForm({ ...form, description: e.target.value })}
+        />
+      </div>
+      <div>
+        <label className="label">核心测试场景</label>
+        <textarea
+          className="input min-h-24"
+          value={form.testScenarios}
+          onChange={(e) => setForm({ ...form, testScenarios: e.target.value })}
+        />
+      </div>
+      {err && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {err}
+        </div>
+      )}
+      <div className="flex justify-end gap-2">
+        <button className="btn-secondary" onClick={onCancel} disabled={saving}>
+          取消
+        </button>
+        <button className="btn-primary" onClick={save} disabled={saving}>
+          {saving
+            ? "保存中…"
+            : req.status === "requirement_rejected"
+              ? "保存并重新提交"
+              : "保存修改"}
+        </button>
+      </div>
+    </section>
   );
 }

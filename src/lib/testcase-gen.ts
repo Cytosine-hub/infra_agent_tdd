@@ -49,7 +49,7 @@ export async function generateTestCases(req: Requirement): Promise<{
   return { testCases: generateWithTemplate(req), source: "template" };
 }
 
-function genPrompt(req: Requirement): string {
+function genPrompt(req: Requirement, extra = ""): string {
   return [
     "你是一名资深测试工程师，为集成中心门户网站的功能需求编写验收测试用例。",
     "输出一个 JSON 数组，每个元素包含字段：id（如 TC-01）、title、precondition、steps（字符串数组）、expected。",
@@ -59,6 +59,7 @@ function genPrompt(req: Requirement): string {
     `所属小组：${req.team}`,
     `需求描述：\n${req.description}`,
     req.testScenarios ? `需求方给出的核心测试场景：\n${req.testScenarios}` : "",
+    extra ? `⚠️ 本次重新生成的补充要求（必须体现在用例中）：${extra}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -78,26 +79,30 @@ function parseTestCases(text: string): TestCase[] {
 }
 
 // 指定引擎生成（runner 任务用）：codex / claude 本地 CLI
-export async function generateWithEngine(req: Requirement, engine: string): Promise<TestCase[]> {
-  if (engine === "codex") return generateWithCodex(req);
+export async function generateWithEngine(
+  req: Requirement,
+  engine: string,
+  extra = ""
+): Promise<TestCase[]> {
+  if (engine === "codex") return generateWithCodex(req, extra);
   if (engine === "claude") {
     const tmpDir = path.join(process.env.DATA_DIR ?? path.join(process.cwd(), "data"), "tmp");
     fs.mkdirSync(tmpDir, { recursive: true });
-    const stdout = await runCli("claude", ["-p", genPrompt(req)], tmpDir, 180_000);
+    const stdout = await runCli("claude", ["-p", genPrompt(req, extra)], tmpDir, 180_000);
     return parseTestCases(stdout);
   }
   throw new Error(`不支持的用例生成引擎：${engine}`);
 }
 
 // 本地 Codex CLI 生成（codex exec 无头模式，最终回答写入文件）
-async function generateWithCodex(req: Requirement): Promise<TestCase[]> {
+async function generateWithCodex(req: Requirement, extra = ""): Promise<TestCase[]> {
   const tmpDir = path.join(process.env.DATA_DIR ?? path.join(process.cwd(), "data"), "tmp");
   fs.mkdirSync(tmpDir, { recursive: true });
   const outFile = path.join(tmpDir, `testcases-${req.id}-${Date.now()}.md`);
   try {
     await runCli(
       "codex",
-      ["exec", "--skip-git-repo-check", "--output-last-message", outFile, genPrompt(req)],
+      ["exec", "--skip-git-repo-check", "--output-last-message", outFile, genPrompt(req, extra)],
       tmpDir,
       180_000
     );

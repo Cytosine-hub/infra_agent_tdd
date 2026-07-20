@@ -221,19 +221,27 @@ export function enqueueReviewTask(requirementId: number, engine?: string): Agent
 }
 
 // 测试用例生成任务入队：默认 codex（TESTCASE_ENGINE 覆盖）
-export function enqueueTestcaseTask(requirementId: number, engine?: string): AgentTaskRow {
+export function enqueueTestcaseTask(
+  requirementId: number,
+  engine?: string,
+  extra = ""
+): AgentTaskRow {
   const genEngine = engine ?? process.env.TESTCASE_ENGINE ?? "codex";
   if (!ENGINES[genEngine]) throw new Error(`不支持的用例生成引擎：${genEngine}`);
   assertNoActiveTask(requirementId, "testcases");
-  return createAgentTask(requirementId, genEngine, "", "", "testcases");
+  return createAgentTask(requirementId, genEngine, "", "", "testcases", 0, extra);
 }
 
 // 前端渲染图任务入队：需求提交后自动触发，AI 判定是否前端需求并生成单文件 HTML 原型
-export function enqueueMockupTask(requirementId: number, engine?: string): AgentTaskRow {
+export function enqueueMockupTask(
+  requirementId: number,
+  engine?: string,
+  extra = ""
+): AgentTaskRow {
   const mkEngine = engine ?? process.env.AGENT_MOCKUP_ENGINE ?? "codex";
   if (!ENGINES[mkEngine]) throw new Error(`不支持的渲染图引擎：${mkEngine}`);
   assertNoActiveTask(requirementId, "mockup");
-  return createAgentTask(requirementId, mkEngine, "", "", "mockup");
+  return createAgentTask(requirementId, mkEngine, "", "", "mockup", 0, extra);
 }
 
 // 额度/限流类错误特征（claude 订阅 session limit、网关 429 等）
@@ -516,7 +524,7 @@ async function runTestcaseTask(taskId: number) {
   let cases: TestCase[];
   let source = task.engine;
   try {
-    cases = await generateWithEngine(req, task.engine);
+    cases = await generateWithEngine(req, task.engine, task.extra);
   } catch (err) {
     console.error("引擎生成用例失败，回退模板:", err);
     cases = generateWithTemplate(req);
@@ -568,6 +576,7 @@ async function runMockupTask(taskId: number) {
     `需求标题：${req.title}`,
     `需求描述：${req.description}`,
     req.testScenarios ? `核心场景：${req.testScenarios}` : "",
+    task.extra ? `⚠️ 本次重新生成的补充要求（必须满足）：${task.extra}` : "",
     atts.length
       ? `需求附件（当前目录下可直接查看，图片请参考其设计）：${atts.map((a) => path.basename(a.storedPath)).join("、")}`
       : "",

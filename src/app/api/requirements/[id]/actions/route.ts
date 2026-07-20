@@ -41,6 +41,7 @@ const BodySchema = z.object({
   model: z.string().optional(),
   effort: z.enum(["low", "medium", "high"]).optional(),
   fallback: z.boolean().optional(),
+  extra: z.string().max(2000).optional(), // 重新生成用例/渲染图时的补充要求
   testCases: z
     .array(
       z.object({
@@ -87,8 +88,13 @@ export const POST = apiHandler(
         user.role === "admin" ||
         (user.role === "lead" && user.team === requirement.team);
       if (!canDo) return forbidden("仅需求提交人或本组组长可生成渲染图");
-      const t = enqueueMockupTask(id, parsed.data.engine);
-      addEvent(id, "mockup_requested", user.username, `手动发起前端渲染图生成（${t.engine}）`);
+      const t = enqueueMockupTask(id, parsed.data.engine, parsed.data.extra ?? "");
+      addEvent(
+        id,
+        "mockup_requested",
+        user.username,
+        `手动发起前端渲染图生成（${t.engine}）${parsed.data.extra ? `，补充要求：${parsed.data.extra.slice(0, 80)}` : ""}`
+      );
       return ok(id);
     }
     if (action === "save_tests") {
@@ -128,8 +134,13 @@ export const POST = apiHandler(
 
       case "generate_tests": {
         // 异步：入队用例生成任务（默认 codex），由 runner 守护进程执行
-        const t = enqueueTestcaseTask(id, parsed.data.engine);
-        addEvent(id, "testcase_task_enqueued", user.username, `用例生成任务已入队（${t.engine}）`);
+        const t = enqueueTestcaseTask(id, parsed.data.engine, parsed.data.extra ?? "");
+        addEvent(
+          id,
+          "testcase_task_enqueued",
+          user.username,
+          `用例生成任务已入队（${t.engine}）${parsed.data.extra ? `，补充要求：${parsed.data.extra.slice(0, 80)}` : ""}`
+        );
         break;
       }
 

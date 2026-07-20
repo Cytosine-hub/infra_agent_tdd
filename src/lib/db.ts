@@ -66,6 +66,7 @@ export function db(): DatabaseSync {
       model TEXT NOT NULL DEFAULT '',
       effort TEXT NOT NULL DEFAULT '',
       fallback INTEGER NOT NULL DEFAULT 0,
+      extra TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'queued',
       result TEXT,
       step TEXT NOT NULL DEFAULT '',
@@ -140,6 +141,9 @@ function migrate(d: DatabaseSync) {
   }
   if (tcols.length > 0 && !tcols.some((c) => c.name === "fallback")) {
     d.exec("ALTER TABLE agent_tasks ADD COLUMN fallback INTEGER NOT NULL DEFAULT 0");
+  }
+  if (tcols.length > 0 && !tcols.some((c) => c.name === "extra")) {
+    d.exec("ALTER TABLE agent_tasks ADD COLUMN extra TEXT NOT NULL DEFAULT ''");
   }
   d.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')");
   const rcols = d.prepare("PRAGMA table_info(requirements)").all() as { name: string }[];
@@ -269,6 +273,12 @@ export function createRequirement(input: {
 export function updateRequirement(id: number, patch: Record<string, unknown>) {
   const colMap: Record<string, string> = {
     status: "status",
+    title: "title",
+    team: "team",
+    repo: "repo",
+    priority: "priority",
+    description: "description",
+    testScenarios: "test_scenarios",
     testCases: "test_cases",
     leadApprovedTests: "lead_approved_tests",
     requesterApprovedTests: "requester_approved_tests",
@@ -488,6 +498,7 @@ export interface AgentTaskRow {
   model: string;
   effort: string;
   fallback: 0 | 1; // 额度受限时是否自动切换备用引擎重试
+  extra: string; // 重新生成时的补充要求（用例/渲染图）
   result: string | null;
   status: "queued" | "running" | "succeeded" | "failed";
   step: string;
@@ -509,6 +520,7 @@ function rowToTask(r: any): AgentTaskRow {
     model: r.model ?? "",
     effort: r.effort ?? "",
     fallback: r.fallback ?? 0,
+    extra: r.extra ?? "",
     result: r.result,
     status: r.status,
     step: r.step,
@@ -528,13 +540,14 @@ export function createAgentTask(
   model = "",
   effort = "",
   kind: AgentTaskKind = "develop",
-  fallback: 0 | 1 = 0
+  fallback: 0 | 1 = 0,
+  extra = ""
 ): AgentTaskRow {
   const res = db()
     .prepare(
-      "INSERT INTO agent_tasks (requirement_id, engine, model, effort, kind, fallback) VALUES (?, ?, ?, ?, ?, ?)"
+      "INSERT INTO agent_tasks (requirement_id, engine, model, effort, kind, fallback, extra) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
-    .run(requirementId, engine, model, effort, kind, fallback);
+    .run(requirementId, engine, model, effort, kind, fallback, extra);
   return getAgentTask(Number(res.lastInsertRowid))!;
 }
 
