@@ -23,7 +23,8 @@ type ActionName =
   | "merge_pr"
   | "sync_github"
   | "save_tests"
-  | "generate_mockup";
+  | "generate_mockup"
+  | "abandon";
 
 export default function RequirementDetail({
   initialRequirement,
@@ -169,6 +170,17 @@ export default function RequirementDetail({
             </div>
           )}
 
+        {req.status === "abandoned" && (
+          <div className="mt-4 rounded-lg border border-zinc-300 bg-zinc-100 px-4 py-3 text-sm text-zinc-600">
+            🗑 <strong>该需求已废弃</strong>：{req.rejectReason ?? "无原因"}。关联的
+            Issue/PR/分支已清理。如需继续，请
+            <a href={`/requirements/new?from=${req.id}`} className="mx-1 text-sky-600 hover:underline">
+              拆解为更小的需求重新提交
+            </a>
+            。
+          </div>
+        )}
+
         {req.guardStatus === "rejected" && (
           <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
             🛡️ <strong>安全审查未通过，Agent 任务不会执行</strong>：{req.guardReason}
@@ -197,9 +209,27 @@ export default function RequirementDetail({
                 ⛔ 代码审查发现<strong>阻断性问题</strong>
                 {req.fixRounds > 0 && `，已自动修复 ${req.fixRounds} 轮`}
                 {req.fixRounds >= 3
-                  ? "（已达自动修复上限，请人工介入或手动重新触发）"
-                  : "，系统正自动把阻断项喂回编码 Agent 修改并复审"}
-                。
+                  ? "。已达自动修复上限——多轮仍未通过通常说明需求偏大，建议拆解为更小的需求："
+                  : "，系统正自动把阻断项喂回编码 Agent 修改并复审。"}
+                {req.fixRounds >= 3 && isLead && (
+                  <span className="mt-2 flex gap-2">
+                    <a
+                      href={`/requirements/new?from=${req.id}`}
+                      className="btn-secondary !px-2.5 !py-1 text-xs"
+                    >
+                      ✂️ 拆解重提
+                    </a>
+                    <button
+                      className="btn-danger !px-2.5 !py-1 text-xs"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        actWithReason("abandon", "废弃原因（将关闭关联 Issue/PR 并删除分支）：")
+                      }
+                    >
+                      🗑 废弃需求
+                    </button>
+                  </span>
+                )}
               </>
             )}
           </div>
@@ -484,6 +514,19 @@ export default function RequirementDetail({
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-center text-sm text-emerald-700">
                 🎉 已合并交付
               </div>
+            )}
+
+            {/* 废弃：组长在任何未完成状态可执行（典型：多轮修复未过，需拆解重提） */}
+            {isLead && req.status !== "done" && req.status !== "abandoned" && (
+              <button
+                className="mt-2 text-xs text-zinc-400 hover:text-red-600 hover:underline"
+                disabled={busy !== null}
+                onClick={() =>
+                  actWithReason("abandon", "废弃原因（将关闭关联 Issue/PR 并删除分支）：")
+                }
+              >
+                🗑 废弃该需求…
+              </button>
             )}
           </div>
         </section>

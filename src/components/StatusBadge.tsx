@@ -10,6 +10,7 @@ const COLORS: Record<Status, string> = {
   developing: "bg-indigo-50 text-indigo-700 border-indigo-200",
   in_review: "bg-cyan-50 text-cyan-700 border-cyan-200",
   done: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  abandoned: "bg-zinc-100 text-zinc-500 border-zinc-300",
 };
 
 export default function StatusBadge({ status }: { status: Status }) {

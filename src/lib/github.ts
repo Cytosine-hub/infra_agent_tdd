@@ -162,6 +162,38 @@ export async function mergePullRequest(req: Requirement): Promise<string> {
   return `PR #${req.prNumber} 已合并（squash），分支已删除`;
 }
 
+// 废弃需求：关闭 PR（不合并）、删除分支、评论并关闭 Issue（not_planned）
+export async function abandonOnGithub(req: Requirement, reason: string): Promise<void> {
+  if (!githubConfigured() || !req.githubIssueNumber) return;
+  const gh = octokit();
+  const { owner, repo: name } = parseRepo(req.repo);
+  if (req.prNumber) {
+    await gh.pulls
+      .update({ owner, repo: name, pull_number: req.prNumber, state: "closed" })
+      .catch(() => {});
+  }
+  if (req.branch) {
+    await gh.git.deleteRef({ owner, repo: name, ref: `heads/${req.branch}` }).catch(() => {});
+  }
+  await gh.issues
+    .createComment({
+      owner,
+      repo: name,
+      issue_number: req.githubIssueNumber,
+      body: `需求已在门户废弃：${reason}\n\n如需继续，请拆解为更小的需求后重新提交。`,
+    })
+    .catch(() => {});
+  await gh.issues
+    .update({
+      owner,
+      repo: name,
+      issue_number: req.githubIssueNumber,
+      state: "closed",
+      state_reason: "not_planned",
+    })
+    .catch(() => {});
+}
+
 // 轮询该需求关联 Issue 的 PR / 合并状态，用于门户端同步进度
 export async function syncIssueState(req: Requirement): Promise<{
   prNumber: number | null;

@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { canPerform, nextTestApprovalState, type Action } from "@/lib/workflow";
 import {
+  abandonOnGithub,
   createIssueForRequirement,
   githubConfigured,
   mergePullRequest,
@@ -33,6 +34,7 @@ const BodySchema = z.object({
     "sync_github",
     "save_tests",
     "generate_mockup",
+    "abandon",
   ]),
   reason: z.string().optional(),
   engine: z.string().optional(),
@@ -63,6 +65,11 @@ export const POST = apiHandler(
     const parsed = BodySchema.safeParse(await req.json());
     if (!parsed.success) return badRequest("请求参数错误");
     const { action, reason, testCases } = parsed.data;
+
+    // 已废弃的需求是终态：一切动作封禁（如需继续应拆解后重新提交）
+    if (requirement.status === "abandoned") {
+      return badRequest("该需求已废弃。如需继续，请拆解为更小的需求后重新提交。");
+    }
     // 执行方案优先级：本次请求参数（人工修改）> 已保存方案（AI 评估）> 环境默认
     const plan = requirement.execPlan;
     const engine = parsed.data.engine ?? plan?.engine ?? process.env.AGENT_ENGINE ?? "claude";
@@ -223,6 +230,18 @@ export const POST = apiHandler(
         if (!githubConfigured()) return badRequest("GitHub 未配置");
         const t = enqueueReviewTask(id, parsed.data.engine);
         addEvent(id, "review_requested", user.username, `发起 PR 审查（${t.engine}）`);
+        break;
+      }
+
+      case "abandon": {
+        updateRequirement(id, { status: "abandoned", rejectReason: reason ?? "需求废弃" });
+        addEvent(id, "abandoned", user.username, `需求废弃：${reason ?? "无原因"}`);
+        // GitHub 清理（关 PR / 删分支 / 关 Issue），best-effort
+        try {
+          await abandonOnGithub(requirement, reason ?? "需求废弃");
+        } catch (e) {
+          console.error("废弃时 GitHub 清理失败:", e);
+        }
         break;
       }
 

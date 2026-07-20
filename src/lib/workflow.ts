@@ -11,6 +11,7 @@ export type Action =
   | "retrigger_dev"
   | "review_pr"
   | "merge_pr"
+  | "abandon"
   | "mark_in_review"
   | "mark_done";
 
@@ -83,6 +84,21 @@ export const ACTION_RULES: Record<Action, ActionRule> = {
   },
   merge_pr: {
     from: ["in_review"],
+    roles: ["lead", "admin"],
+    guard: sameTeamLead,
+  },
+  // 废弃：任何未完成状态都可（典型场景：多轮修复未过审查，需求需拆解重提）
+  abandon: {
+    from: [
+      "submitted",
+      "requirement_rejected",
+      "requirement_approved",
+      "testcases_generated",
+      "testcases_rejected",
+      "testcases_approved",
+      "developing",
+      "in_review",
+    ],
     roles: ["lead", "admin"],
     guard: sameTeamLead,
   },

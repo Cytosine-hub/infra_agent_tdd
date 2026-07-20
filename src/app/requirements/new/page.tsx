@@ -1,11 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { type Repo } from "@/lib/types";
 
 export default function NewRequirementPage() {
+  return (
+    <Suspense>
+      <NewRequirementInner />
+    </Suspense>
+  );
+}
+
+function NewRequirementInner() {
   const router = useRouter();
+  const fromId = useSearchParams().get("from"); // 拆解重提：预填原需求内容
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [repos, setRepos] = useState<Repo[]>([]);
@@ -18,6 +27,26 @@ export default function NewRequirementPage() {
     description: "",
     testScenarios: "",
   });
+
+  // 拆解重提：从原需求预填（标题/小组/仓库/描述/场景），供拆小后修改提交
+  useEffect(() => {
+    if (!fromId) return;
+    fetch(`/api/requirements/${fromId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const r = d?.requirement;
+        if (!r) return;
+        setForm((f) => ({
+          ...f,
+          title: `${r.title}（拆解）`,
+          team: r.team,
+          repo: r.repo,
+          priority: r.priority,
+          description: `> 拆解自需求 #${r.id}（多轮开发未通过审查，建议缩小范围后重提）\n\n${r.description}`,
+          testScenarios: r.testScenarios,
+        }));
+      });
+  }, [fromId]);
 
   useEffect(() => {
     fetch("/api/repos?forUser=1")

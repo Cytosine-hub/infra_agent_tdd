@@ -28,16 +28,18 @@ const ACTIVE_STATUSES: Status[] = [
   "done",
 ];
 
-// 已终止：被驳回（需求/用例）或安全审查未通过——退出主流程，收进折叠区
+// 已终止：被驳回（需求/用例）、安全审查未通过、或已废弃——退出主流程，收进折叠区
 function isArchived(r: Requirement): boolean {
   return (
     r.guardStatus === "rejected" ||
     r.status === "requirement_rejected" ||
-    r.status === "testcases_rejected"
+    r.status === "testcases_rejected" ||
+    r.status === "abandoned"
   );
 }
 
 function archiveNote(r: Requirement): string {
+  if (r.status === "abandoned") return `🗑 已废弃：${r.rejectReason ?? "无原因"}`;
   if (r.guardStatus === "rejected") return `🛡️ 安全审查未通过：${r.guardReason}`;
   if (r.status === "requirement_rejected") return `需求驳回：${r.rejectReason ?? "无原因"}`;
   if (r.status === "testcases_rejected") return `用例驳回：${r.rejectReason ?? "无原因"}`;

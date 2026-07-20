@@ -92,6 +92,18 @@ describe("nextTestApprovalState 双审逻辑", () => {
   });
 });
 
+describe("abandon（需求废弃）", () => {
+  it("本组组长可在进行中状态废弃", () => {
+    expect(canPerform("abandon", makeReq({ status: "in_review" }), dbLead)).toBeNull();
+    expect(canPerform("abandon", makeReq({ status: "developing" }), dbLead)).toBeNull();
+  });
+  it("已完成不可废弃；他组组长/组员不可废弃", () => {
+    expect(canPerform("abandon", makeReq({ status: "done" }), dbLead)).not.toBeNull();
+    expect(canPerform("abandon", makeReq({ status: "in_review" }), mwLead)).not.toBeNull();
+    expect(canPerform("abandon", makeReq({ status: "in_review" }), member)).not.toBeNull();
+  });
+});
+
 describe("branchNameFor", () => {
   it("分支名包含需求 ID 与 issue 号，保证唯一", () => {
     expect(branchNameFor(makeReq({ id: 42 }), 7)).toBe("feature/req-42-issue-7");

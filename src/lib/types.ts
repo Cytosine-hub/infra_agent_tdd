@@ -9,6 +9,7 @@ export const STATUSES = [
   "developing", // 已建 GitHub Issue，agent 开发中
   "in_review", // PR 已创建，CI + Claude 审查中
   "done", // PR 已合并
+  "abandoned", // 已废弃（如多轮修复未过审查，需求需拆解后重新提交）
 ] as const;
 
 export type Status = (typeof STATUSES)[number];
@@ -23,6 +24,7 @@ export const STATUS_LABELS: Record<Status, string> = {
   developing: "开发中",
   in_review: "PR 审查中",
   done: "已完成",
+  abandoned: "已废弃",
 };
 
 export type Role = "member" | "lead" | "admin";
