@@ -21,7 +21,8 @@ export default function RepoManager() {
   const [fullName, setFullName] = useState("");
   const [description, setDescription] = useState("");
   const [team, setTeam] = useState("");
-  const [host, setHost] = useState("github.com");
+  const [provider, setProvider] = useState<"github" | "gitlab">("github");
+  const [host, setHost] = useState("");
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -74,7 +75,7 @@ export default function RepoManager() {
     const res = await fetch("/api/repos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fullName, description, team, host, token }),
+      body: JSON.stringify({ fullName, description, team, provider, host, token }),
     });
     const data = await res.json();
     setBusy(false);
@@ -85,7 +86,8 @@ export default function RepoManager() {
     setFullName("");
     setDescription("");
     setTeam("");
-    setHost("github.com");
+    setProvider("github");
+    setHost("");
     setToken("");
     load();
   }
@@ -100,22 +102,44 @@ export default function RepoManager() {
   return (
     <div>
       <p className="text-sm text-zinc-500">
-        维护可供需求绑定的目标 GitHub 仓库。每个仓库根目录需有 <code>agent.md</code>
-        （开发规范）并部署 Agent 工作流（见 github-templates/）。
+        维护可供需求绑定的目标仓库，支持 <b>GitHub</b> 与自建 <b>GitLab</b>。每个仓库根目录需有{" "}
+        <code>agent.md</code>（开发规范，可在入驻时自动生成）。GitLab 仓库需绑定专用访问令牌。
       </p>
 
-      <form onSubmit={add} className="card mt-4 flex items-end gap-3 p-5">
-        <div className="flex-1">
-          <label className="label">仓库（owner/repo）*</label>
+      <form onSubmit={add} className="card mt-4 flex flex-wrap items-end gap-3 p-5">
+        <div className="w-32">
+          <label className="label">类型 *</label>
+          <select
+            className="input"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as "github" | "gitlab")}
+          >
+            <option value="github">GitHub</option>
+            <option value="gitlab">GitLab（自建）</option>
+          </select>
+        </div>
+        <div className="min-w-[220px] flex-1">
+          <label className="label">仓库路径（owner/repo）*</label>
           <input
             className="input"
             value={fullName}
             onChange={(e) => setFullName(e.target.value)}
-            placeholder="your-org/ops-portal"
+            placeholder={provider === "gitlab" ? "group/subgroup/repo" : "your-org/ops-portal"}
             required
           />
         </div>
-        <div className="flex-1">
+        {provider === "gitlab" && (
+          <div className="min-w-[220px] flex-1">
+            <label className="label">GitLab 域名 *</label>
+            <input
+              className="input"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              placeholder="http://gitlab.内网域名"
+            />
+          </div>
+        )}
+        <div className="min-w-[160px] flex-1">
           <label className="label">说明</label>
           <input
             className="input"
@@ -135,23 +159,18 @@ export default function RepoManager() {
             ))}
           </select>
         </div>
-        <div className="w-44">
-          <label className="label">代码托管主机</label>
-          <input
-            className="input"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            placeholder="github.com"
-          />
-        </div>
-        <div className="flex-1">
-          <label className="label">专用令牌（可选）</label>
+        <div className="min-w-[200px] flex-1">
+          <label className="label">
+            专用令牌{provider === "gitlab" ? " *" : "（可选）"}
+          </label>
           <input
             className="input"
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="留空则用全局令牌；一仓一 token"
+            placeholder={
+              provider === "gitlab" ? "GitLab PAT（api 权限）" : "留空则用全局 GITHUB_TOKEN；一仓一 token"
+            }
             autoComplete="off"
           />
         </div>
@@ -185,11 +204,16 @@ export default function RepoManager() {
                   {r.team ? `${r.team}专属` : "公共"}
                 </span>
                 <OnboardBadge repo={r} />
-                {r.host && r.host !== "github.com" && (
-                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">
-                    {r.host}
-                  </span>
-                )}
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[11px] ${
+                    r.provider === "gitlab"
+                      ? "bg-orange-50 text-orange-700"
+                      : "bg-zinc-100 text-zinc-600"
+                  }`}
+                  title={r.host}
+                >
+                  {r.provider === "gitlab" ? `GitLab · ${r.host.replace(/^https?:\/\//, "")}` : "GitHub"}
+                </span>
                 <span
                   className={`rounded-full px-2 py-0.5 text-[11px] ${
                     r.hasToken ? "bg-emerald-50 text-emerald-700" : "bg-zinc-100 text-zinc-500"

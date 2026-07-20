@@ -58,7 +58,8 @@ export function db(): DatabaseSync {
       onboard_pr TEXT NOT NULL DEFAULT '',
       indexed_at TEXT,
       token TEXT NOT NULL DEFAULT '',
-      host TEXT NOT NULL DEFAULT 'github.com'
+      host TEXT NOT NULL DEFAULT 'github.com',
+      provider TEXT NOT NULL DEFAULT 'github'
     );
     CREATE TABLE IF NOT EXISTS agent_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +177,11 @@ function migrate(d: DatabaseSync) {
   if (pcols.length > 0 && !pcols.some((c) => c.name === "token")) {
     d.exec("ALTER TABLE repos ADD COLUMN token TEXT NOT NULL DEFAULT ''");
     d.exec("ALTER TABLE repos ADD COLUMN host TEXT NOT NULL DEFAULT 'github.com'");
+  }
+  if (pcols.length > 0 && !pcols.some((c) => c.name === "provider")) {
+    d.exec("ALTER TABLE repos ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'");
+    // 回填：非 github.com 主机视为自建 GitLab
+    d.exec("UPDATE repos SET provider = 'gitlab' WHERE host NOT LIKE '%github.com%'");
   }
 }
 
@@ -401,6 +407,9 @@ function rowToRepo(r: any): Repo {
     indexedAt: r.indexed_at ?? null,
     hasToken: Boolean(r.token),
     host: r.host ?? "github.com",
+    provider: (r.provider ?? ((r.host ?? "github.com").includes("github.com") ? "github" : "gitlab")) as
+      | "github"
+      | "gitlab",
   };
 }
 
@@ -431,15 +440,25 @@ export function addRepo(
   description = "",
   team = "",
   token = "",
-  host = "github.com"
+  host = "github.com",
+  provider: "github" | "gitlab" = "github"
 ): Repo {
   // 新加仓库置 pending，由 runner 后台入驻（clone + codegraph 索引 + agent.md）
   db()
     .prepare(
-      "INSERT OR IGNORE INTO repos (full_name, description, team, token, host, onboard_status) VALUES (?, ?, ?, ?, ?, 'pending')"
+      "INSERT OR IGNORE INTO repos (full_name, description, team, token, host, provider, onboard_status) VALUES (?, ?, ?, ?, ?, ?, 'pending')"
     )
-    .run(fullName, description, team, token, host);
+    .run(fullName, description, team, token, host, provider);
   return getRepoByName(fullName)!;
+}
+
+// 取仓库托管类型（github / gitlab），用于分派对应的 API 适配层
+export function getRepoProvider(fullName: string): "github" | "gitlab" {
+  const r = db().prepare("SELECT provider, host FROM repos WHERE full_name = ?").get(fullName) as
+    | { provider?: string; host?: string }
+    | undefined;
+  if (r?.provider === "gitlab" || r?.provider === "github") return r.provider;
+  return (r?.host ?? "github.com").includes("github.com") ? "github" : "gitlab";
 }
 
 // 取仓库 host（clone/push 用）

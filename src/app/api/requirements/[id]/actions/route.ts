@@ -7,10 +7,10 @@ import { canPerform, nextTestApprovalState, type Action } from "@/lib/workflow";
 import {
   abandonOnGithub,
   createIssueForRequirement,
-  githubConfigured,
+  providerConfigured,
   mergePullRequest,
   syncIssueState,
-} from "@/lib/github";
+} from "@/lib/repo-provider";
 import {
   enqueueDevTask,
   enqueueMockupTask,
@@ -167,8 +167,10 @@ export const POST = apiHandler(
         break;
 
       case "start_dev": {
-        if (!githubConfigured()) {
-          return badRequest("GitHub 未配置。请在 .env.local 中设置 GITHUB_TOKEN 后重启服务");
+        if (!providerConfigured(requirement.repo)) {
+          return badRequest(
+            "目标仓库未配置访问凭据。GitHub 仓库需设置全局 GITHUB_TOKEN；GitLab 仓库需在仓库管理中绑定专用 token"
+          );
         }
         // 门禁：仓库入驻（建索引 + agent.md）完成前不能启动开发
         const repo = getRepoByName(requirement.repo);
@@ -214,7 +216,7 @@ export const POST = apiHandler(
       }
 
       case "retrigger_dev": {
-        if (!githubConfigured()) return badRequest("GitHub 未配置");
+        if (!providerConfigured(requirement.repo)) return badRequest("目标仓库未配置访问凭据");
         // 人工修改过方案则保存，后续重试沿用
         if (parsed.data.engine || parsed.data.model || parsed.data.effort) {
           updateRequirement(id, {
@@ -238,7 +240,7 @@ export const POST = apiHandler(
       }
 
       case "review_pr": {
-        if (!githubConfigured()) return badRequest("GitHub 未配置");
+        if (!providerConfigured(requirement.repo)) return badRequest("目标仓库未配置访问凭据");
         const t = enqueueReviewTask(id, parsed.data.engine);
         addEvent(id, "review_requested", user.username, `发起 PR 审查（${t.engine}）`);
         break;
@@ -257,7 +259,7 @@ export const POST = apiHandler(
       }
 
       case "merge_pr": {
-        if (!githubConfigured()) return badRequest("GitHub 未配置");
+        if (!providerConfigured(requirement.repo)) return badRequest("目标仓库未配置访问凭据");
         const message = await mergePullRequest(requirement);
         updateRequirement(id, { status: "done" });
         addEvent(id, "pr_merged", user.username, message);
@@ -270,8 +272,8 @@ export const POST = apiHandler(
 
 async function handleSync(id: number): Promise<NextResponse> {
   const requirement = getRequirement(id)!;
-  if (!githubConfigured()) return badRequest("GitHub 未配置");
-  if (!requirement.githubIssueNumber) return badRequest("该需求尚未关联 GitHub Issue");
+  if (!providerConfigured(requirement.repo)) return badRequest("目标仓库未配置访问凭据");
+  if (!requirement.githubIssueNumber) return badRequest("该需求尚未关联 Issue");
   const state = await syncIssueState(requirement);
   const patch: Record<string, unknown> = { prNumber: state.prNumber, prUrl: state.prUrl };
   let newStatus = requirement.status;

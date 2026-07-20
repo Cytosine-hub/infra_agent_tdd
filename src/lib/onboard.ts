@@ -1,17 +1,10 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
-import { Octokit } from "@octokit/rest";
-import { getRepoById, getRepoHost, updateRepoOnboard } from "./db";
+import { getRepoById, updateRepoOnboard } from "./db";
 import { ENGINES } from "./agent-runner";
-import { prepareRepoWorkspace, remoteDefaultBranch, repoWorkspaceDir } from "./repo-index";
-import { getDefaultBranch } from "./github";
-
-// github.com 用 GitHub API 拿默认分支；自建 GitLab 等其它主机用 git 探测（主机无关）。
-async function resolveDefaultBranch(repoFullName: string): Promise<string> {
-  const host = getRepoHost(repoFullName);
-  return host === "github.com" ? getDefaultBranch(repoFullName) : remoteDefaultBranch(repoFullName);
-}
+import { prepareRepoWorkspace, repoWorkspaceDir } from "./repo-index";
+import { getDefaultBranch, openDocsPr, providerConfigured } from "./repo-provider";
 
 // 仓库入驻：加入门户时后台执行——建持久 codegraph 索引 + 分析生成/补齐 agent.md 并开 PR。
 // 完成前该仓库不能启动开发任务（门禁见 actions 路由）。
@@ -119,62 +112,22 @@ export function cleanAgentMd(raw: string): string {
   return s.trim() + "\n";
 }
 
-function octokit(): Octokit {
-  return new Octokit({ auth: process.env.GITHUB_TOKEN });
-}
-
-// 通过 GitHub API 在新分支上写入 agent.md + 引导文件，开 PR
+// 在新分支写入 agent.md + 引导文件并开 PR/MR（按仓库托管平台分派，GitHub/GitLab 均支持）
 async function openAgentMdPr(repoFullName: string, content: string): Promise<string> {
-  const gh = octokit();
-  const [owner, repo] = repoFullName.split("/");
-  const base = await getDefaultBranch(repoFullName);
-  const baseRef = await gh.git.getRef({ owner, repo, ref: `heads/${base}` });
-  const baseSha = baseRef.data.object.sha;
-
-  // 新建/重置分支
-  await gh.git
-    .createRef({ owner, repo, ref: `refs/heads/${AGENT_MD_BRANCH}`, sha: baseSha })
-    .catch(async () => {
-      await gh.git.updateRef({ owner, repo, ref: `heads/${AGENT_MD_BRANCH}`, sha: baseSha, force: true });
-    });
-
-  const putFile = async (filePath: string, text: string) => {
-    let sha: string | undefined;
-    try {
-      const existing = await gh.repos.getContent({ owner, repo, path: filePath, ref: AGENT_MD_BRANCH });
-      if (!Array.isArray(existing.data) && "sha" in existing.data) sha = existing.data.sha;
-    } catch {
-      /* 文件不存在 */
-    }
-    await gh.repos.createOrUpdateFileContents({
-      owner,
-      repo,
-      path: filePath,
-      branch: AGENT_MD_BRANCH,
-      message: `docs: 入驻自动生成/更新 ${filePath}`,
-      content: Buffer.from(text, "utf-8").toString("base64"),
-      sha,
-    });
-  };
-
-  await putFile("agent.md", content);
   const pointer = "开发规范见 [agent.md](agent.md)，动手前必须先完整阅读并严格遵循。\n";
-  await putFile("CLAUDE.md", pointer);
-  await putFile("AGENTS.md", pointer);
-
-  // 已有同分支 PR 则复用
-  const existing = await gh.pulls.list({ owner, repo, head: `${owner}:${AGENT_MD_BRANCH}`, state: "open" });
-  if (existing.data.length > 0) return existing.data[0].html_url;
-  const pr = await gh.pulls.create({
-    owner,
-    repo,
-    base,
-    head: AGENT_MD_BRANCH,
-    title: "docs: 新增/更新 agent.md（门户入驻自动生成）",
-    body:
-      "由需求门户在仓库入驻时自动分析生成/补齐，作为给 AI 开发 Agent 的项目说明书。\n\n请审阅后合并。合并后本仓库的开发/审查 Agent 都会遵循它。\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
-  });
-  return pr.data.html_url;
+  return openDocsPr(
+    repoFullName,
+    [
+      { path: "agent.md", text: content },
+      { path: "CLAUDE.md", text: pointer },
+      { path: "AGENTS.md", text: pointer },
+    ],
+    {
+      branch: AGENT_MD_BRANCH,
+      title: "docs: 新增/更新 agent.md（门户入驻自动生成）",
+      body: "由需求门户在仓库入驻时自动分析生成/补齐，作为给 AI 开发 Agent 的项目说明书。\n\n请审阅后合并。合并后本仓库的开发/审查 Agent 都会遵循它。\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+    }
+  );
 }
 
 // runner 调用的入驻主流程
@@ -184,14 +137,13 @@ export async function runRepoOnboard(repoId: number): Promise<void> {
   try {
     // 1. 共享工作区（clone + 切默认分支 + codegraph 索引）
     updateRepoOnboard(repoId, { onboardStep: "建代码索引" });
-    const base = await resolveDefaultBranch(repo.fullName);
+    const base = await getDefaultBranch(repo.fullName);
     const { indexed } = await prepareRepoWorkspace(repo.fullName, { base });
     updateRepoOnboard(repoId, { indexedAt: new Date().toISOString().replace("T", " ").slice(0, 19) });
 
-    // 2. agent.md：分析生成/补齐 → 开 PR（best-effort，不阻塞就绪）
-    // 开 PR 走 GitHub API，暂仅支持 github.com；自建 GitLab 的 MR 自动化待补（见路线图）。
+    // 2. agent.md：分析生成/补齐 → 开 PR/MR（best-effort，不阻塞就绪；GitHub/GitLab 均支持）
     let prUrl = "";
-    if (process.env.GITHUB_TOKEN && getRepoHost(repo.fullName) === "github.com") {
+    if (providerConfigured(repo.fullName)) {
       try {
         updateRepoOnboard(repoId, { onboardStep: "生成 agent.md" });
         const mirror = repoWorkspaceDir(repo.fullName);

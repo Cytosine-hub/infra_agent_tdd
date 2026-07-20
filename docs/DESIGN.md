@@ -348,16 +348,25 @@ runner 全局串行执行，故同一项目的所有任务（开发/修复/审�
   兼容 HTTP-only 的内网 GitLab）。`cloneUrl` 按主机选择协议与用户名
   （GitHub=x-access-token / GitLab=oauth2）。默认分支探测改为主机无关：
   非 github 用 `git ls-remote --symref` 读取远程 HEAD，避免写死 main 在 master 仓库失败。
-- **已知边界（路线图）**：入驻的 agent.md 开 PR、以及需求开发闭环的
-  建 Issue / 建 PR / 合并（`src/lib/github.ts`、`onboard.ts` 的 `openAgentMdPr`）
-  目前仅走 GitHub API（Octokit）。绑定到自建 GitLab 的仓库可完成 clone/索引/入驻，
-  但**全链路开发流水线（Issue/MR/合并自动化）需补一层 GitLab API 适配**——见下。
+### v21（2026-07-20）：GitLab 全链路适配 + 添加仓库选托管类型
+
+- **代码托管提供方抽象**：新增 `src/lib/repo-provider.ts` façade，按仓库 `provider`
+  （github / gitlab）分派到 `github.ts`（Octokit）或 `gitlab.ts`（GitLab REST v4）。
+  上层（actions 路由、`agent-runner`、`onboard`）只依赖 façade，不再直接耦合 Octokit。
+  统一的高层接口：`getDefaultBranch / createIssueForRequirement / createOrGetPullRequest /
+  postPrComment / openDocsPr / listAgentRuns / mergePullRequest / abandonOnGithub / syncIssueState`。
+- **GitLab 适配层（`gitlab.ts`）**：Issue、MR（建/复用/评论/合并/关闭）、流水线状态、
+  分支+多文件提交开 MR（agent.md 入驻）、Issue↔MR 状态同步，全部对接 GitLab REST API v4。
+  认证用一仓一 token（或 `ZGL_TOKEN` 兜底）。
+- **反代 %2F 兼容**：不少反代（Apache `AllowEncodedSlashes off`）会拦截路径中的编码斜杠，
+  故一律用 `search` 解析并缓存**数字 project id**，避免 `/projects/:path%2F...`；含斜杠的分支
+  一律走请求体传名，不用「按名删分支」（合并时靠 `remove_source_branch` 自动删）。
+- **添加仓库选类型**：表单新增「类型」选择（GitHub / 自建 GitLab）。选 GitLab 时必填自建域名
+  与专用令牌；GitHub 固定 `github.com`、令牌可选（回退全局）。列表按 provider 显示徽章。
+- 新增 `repos.provider` 列（迁移时按 host 回填），凭据校验改为 `providerConfigured(repo)`。
 
 ## 6. 后续演进
 
-- **GitLab API 适配层**：把 `github.ts` 的 Issue/PR/合并/运行状态、`onboard.ts` 的 agent.md MR
-  抽象为「代码托管提供方」接口，按 `repo.host` 分派 GitHub/GitLab 实现，
-  使自建 GitLab 主仓库也能跑完整需求交付流水线（当前仅 GitHub 全链路可用）。
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。
 - 需求与 GitHub Projects 看板双向同步。
 - Codex 支持：目标仓库同时维护 AGENTS.md，workflow 中按标签选择 agent。

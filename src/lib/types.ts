@@ -82,6 +82,7 @@ export interface Repo {
   indexedAt: string | null;
   hasToken: boolean; // 是否绑定了专用 token（不暴露明文）
   host: string; // 代码托管主机（github.com 或自建 GitLab 域名）
+  provider: "github" | "gitlab"; // 托管类型，决定用哪套 API 适配层
 }
 
 // 启动开发前的执行方案（AI 评估 + 人工可改）

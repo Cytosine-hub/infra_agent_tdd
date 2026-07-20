@@ -2,7 +2,6 @@ import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import fs from "node:fs";
-import { Octokit } from "@octokit/rest";
 import {
   addEvent,
   createAgentTask,
@@ -16,7 +15,7 @@ import {
 import type { Requirement, TestCase } from "./types";
 import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from "./testcase-gen";
 import { ensureGuardApproved } from "./guard";
-import { getDefaultBranch } from "./github";
+import { createOrGetPullRequest, getDefaultBranch, postPrComment } from "./repo-provider";
 import { DATA_DIR, prepareRepoWorkspace, repoWorkspaceDir } from "./repo-index";
 import { ensureUploadsDir, mockupPath, uploadsDir } from "./uploads";
 import { listAttachments } from "./db";
@@ -27,7 +26,7 @@ const execFileP = promisify(execFile);
 // 不走 Anthropic API 计费，复用客户端订阅额度；门户服务器需装有对应 CLI。
 //
 // 流程：clone(独立工作区) → 建分支 → 生成任务提示词 → 本地 CLI 开发(测试先行)
-//     → runner 强制跑仓库测试 → 兜底提交 → push → Octokit 建 PR → 需求转入 in_review
+//     → runner 强制跑仓库测试 → 兜底提交 → push → 建 PR/MR（按仓库托管平台分派）→ 需求转入 in_review
 
 export type Effort = "low" | "medium" | "high";
 
@@ -457,32 +456,19 @@ async function runTask(taskId: number) {
     });
 
     updateAgentTask(task.id, { step: "pull_request" });
-    const [owner, name] = req.repo.split("/");
-    const gh = new Octokit({ auth: process.env.GITHUB_TOKEN });
-    const existing = await gh.pulls.list({ owner, repo: name, head: `${owner}:${branch}`, state: "open" });
-    let prNumber: number, prUrl: string;
-    if (existing.data.length > 0) {
-      prNumber = existing.data[0].number;
-      prUrl = existing.data[0].html_url;
-    } else {
-      const pr = await gh.pulls.create({
-        owner,
-        repo: name,
-        base: baseBranch,
-        head: branch,
-        title: `[${req.team}] ${req.title}`,
-        body: [
-          `由本地 Agent（${task.engine}）自动开发。`,
-          "",
-          `- 门户需求：#${req.id}`,
-          `- 验收测试用例：见 Issue，已全部转为自动化测试并在本地通过`,
-          "",
-          `Closes #${req.githubIssueNumber}`,
-        ].join("\n"),
-      });
-      prNumber = pr.data.number;
-      prUrl = pr.data.html_url;
-    }
+    const { number: prNumber, url: prUrl } = await createOrGetPullRequest(req, {
+      branch,
+      base: baseBranch,
+      title: `[${req.team}] ${req.title}`,
+      body: [
+        `由本地 Agent（${task.engine}）自动开发。`,
+        "",
+        `- 门户需求：#${req.id}`,
+        `- 验收测试用例：见 Issue，已全部转为自动化测试并在本地通过`,
+        "",
+        `Closes #${req.githubIssueNumber}`,
+      ].join("\n"),
+    });
 
     updateRequirement(req.id, { status: "in_review", prNumber, prUrl });
     updateAgentTask(task.id, { status: "succeeded", step: "done", pid: null });
@@ -730,14 +716,10 @@ async function runReviewTask(taskId: number) {
 
     // 建议写回 PR 评论
     updateAgentTask(task.id, { step: "comment" });
-    const [owner, name] = req.repo.split("/");
-    const gh = new Octokit({ auth: process.env.GITHUB_TOKEN });
-    await gh.issues.createComment({
-      owner,
-      repo: name,
-      issue_number: req.prNumber,
-      body: `## 🧐 自动代码审查（${task.engine}）\n\n${result}\n\n---\n_由需求门户本地 Agent 审查生成 · 门户需求 #${req.id}_`,
-    });
+    await postPrComment(
+      req,
+      `## 🧐 自动代码审查（${task.engine}）\n\n${result}\n\n---\n_由需求门户本地 Agent 审查生成 · 门户需求 #${req.id}_`
+    );
 
     updateAgentTask(task.id, {
       status: "succeeded",

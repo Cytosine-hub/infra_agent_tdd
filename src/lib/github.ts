@@ -90,6 +90,91 @@ export async function createIssueForRequirement(req: Requirement): Promise<{
   };
 }
 
+// 在新分支上写入若干文件并开 PR（入驻时的 agent.md/引导文件）。files: 相对路径 → 文本内容。
+export async function openDocsPr(
+  repoFullName: string,
+  files: { path: string; text: string }[],
+  meta: { branch: string; title: string; body: string }
+): Promise<string> {
+  const gh = octokit();
+  const { owner, repo } = parseRepo(repoFullName);
+  const base = await getDefaultBranch(repoFullName);
+  const baseRef = await gh.git.getRef({ owner, repo, ref: `heads/${base}` });
+  const baseSha = baseRef.data.object.sha;
+
+  await gh.git
+    .createRef({ owner, repo, ref: `refs/heads/${meta.branch}`, sha: baseSha })
+    .catch(async () => {
+      await gh.git.updateRef({ owner, repo, ref: `heads/${meta.branch}`, sha: baseSha, force: true });
+    });
+
+  for (const f of files) {
+    let sha: string | undefined;
+    try {
+      const existing = await gh.repos.getContent({ owner, repo, path: f.path, ref: meta.branch });
+      if (!Array.isArray(existing.data) && "sha" in existing.data) sha = existing.data.sha;
+    } catch {
+      /* 文件不存在 */
+    }
+    await gh.repos.createOrUpdateFileContents({
+      owner,
+      repo,
+      path: f.path,
+      branch: meta.branch,
+      message: `docs: 入驻自动生成/更新 ${f.path}`,
+      content: Buffer.from(f.text, "utf-8").toString("base64"),
+      sha,
+    });
+  }
+
+  const existing = await gh.pulls.list({ owner, repo, head: `${owner}:${meta.branch}`, state: "open" });
+  if (existing.data.length > 0) return existing.data[0].html_url;
+  const pr = await gh.pulls.create({
+    owner,
+    repo,
+    base,
+    head: meta.branch,
+    title: meta.title,
+    body: meta.body,
+  });
+  return pr.data.html_url;
+}
+
+// 本地 Agent 开发完成、push 分支后，创建（或复用已存在的）PR。
+export async function createOrGetPullRequest(
+  req: Requirement,
+  opts: { branch: string; base: string; title: string; body: string }
+): Promise<{ number: number; url: string }> {
+  const gh = octokit();
+  const { owner, repo: name } = parseRepo(req.repo);
+  const existing = await gh.pulls.list({
+    owner,
+    repo: name,
+    head: `${owner}:${opts.branch}`,
+    state: "open",
+  });
+  if (existing.data.length > 0) {
+    return { number: existing.data[0].number, url: existing.data[0].html_url };
+  }
+  const pr = await gh.pulls.create({
+    owner,
+    repo: name,
+    base: opts.base,
+    head: opts.branch,
+    title: opts.title,
+    body: opts.body,
+  });
+  return { number: pr.data.number, url: pr.data.html_url };
+}
+
+// 把审查意见写回 PR 评论
+export async function postPrComment(req: Requirement, body: string): Promise<void> {
+  const gh = octokit();
+  const { owner, repo: name } = parseRepo(req.repo);
+  if (!req.prNumber) throw new Error("该需求尚未关联 PR");
+  await gh.issues.createComment({ owner, repo: name, issue_number: req.prNumber, body });
+}
+
 // 拉取与需求相关的 GitHub Actions 运行状态（Agent Develop / CI / Claude PR Review），
 // 用于监控 agent 是否中断/失败
 export async function listAgentRuns(req: Requirement): Promise<AgentRun[]> {

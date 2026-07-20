@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRequirement } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest } from "@/lib/api";
-import { githubConfigured, listAgentRuns } from "@/lib/github";
+import { providerConfigured, listAgentRuns } from "@/lib/repo-provider";
 import { summarizeRuns } from "@/lib/agent-monitor";
 
 // 需求相关的 GitHub Actions 运行状态（Agent 监控数据源）
@@ -12,7 +12,7 @@ export const GET = apiHandler(
     const id = Number((await ctx.params).id);
     const requirement = getRequirement(id);
     if (!requirement) return badRequest("需求不存在");
-    if (!githubConfigured() || !requirement.githubIssueNumber) {
+    if (!providerConfigured(requirement.repo) || !requirement.githubIssueNumber) {
       return NextResponse.json({ runs: [], health: "idle" });
     }
     const runs = await listAgentRuns(requirement);
