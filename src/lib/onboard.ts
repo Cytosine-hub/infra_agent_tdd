@@ -112,22 +112,27 @@ export function cleanAgentMd(raw: string): string {
   return s.trim() + "\n";
 }
 
-// 在新分支写入 agent.md + 引导文件并开 PR/MR（按仓库托管平台分派，GitHub/GitLab 均支持）
-async function openAgentMdPr(repoFullName: string, content: string): Promise<string> {
+// 在新分支写入 agent.md + 引导文件并开 PR/MR（按仓库托管平台分派，GitHub/GitLab 均支持）。
+// 关键：CLAUDE.md / AGENTS.md 若已存在（仓库可能用它们当主规范），一律不覆盖，只在缺失时补一个指针，
+// 避免把维护者精心写好的规范冲掉。
+async function openAgentMdPr(repoFullName: string, content: string, mirror: string): Promise<string> {
   const pointer = "开发规范见 [agent.md](agent.md)，动手前必须先完整阅读并严格遵循。\n";
-  return openDocsPr(
-    repoFullName,
-    [
-      { path: "agent.md", text: content },
-      { path: "CLAUDE.md", text: pointer },
-      { path: "AGENTS.md", text: pointer },
-    ],
-    {
-      branch: AGENT_MD_BRANCH,
-      title: "docs: 新增/更新 agent.md（门户入驻自动生成）",
-      body: "由需求门户在仓库入驻时自动分析生成/补齐，作为给 AI 开发 Agent 的项目说明书。\n\n请审阅后合并。合并后本仓库的开发/审查 Agent 都会遵循它。\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
-    }
-  );
+  const files = [{ path: "agent.md", text: content }];
+  for (const pf of ["CLAUDE.md", "AGENTS.md"]) {
+    if (!fs.existsSync(path.join(mirror, pf))) files.push({ path: pf, text: pointer });
+  }
+  const keptNote =
+    files.length < 3
+      ? "\n\n注：检测到仓库已有 CLAUDE.md/AGENTS.md，已保留不动，仅新增/更新 agent.md。"
+      : "";
+  return openDocsPr(repoFullName, files, {
+    branch: AGENT_MD_BRANCH,
+    title: "docs: 新增/更新 agent.md（门户入驻自动生成）",
+    body:
+      "由需求门户在仓库入驻时自动分析生成/补齐，作为给 AI 开发 Agent 的项目说明书。\n\n请审阅后合并。合并后本仓库的开发/审查 Agent 都会遵循它。" +
+      keptNote +
+      "\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+  });
 }
 
 // runner 调用的入驻主流程
@@ -153,7 +158,7 @@ export async function runRepoOnboard(repoId: number): Promise<void> {
         const content = await generateAgentMd(mirror, hasExisting, indexed);
         // 已有且内容基本一致（已符合要求）→ 不开 PR
         if (!hasExisting || normalize(content) !== normalize(existing)) {
-          prUrl = await openAgentMdPr(repo.fullName, content);
+          prUrl = await openAgentMdPr(repo.fullName, content, mirror);
         }
       } catch (err) {
         console.error("agent.md 生成失败（索引已就绪，可手动处理）:", err);
