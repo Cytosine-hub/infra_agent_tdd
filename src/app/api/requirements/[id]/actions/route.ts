@@ -12,6 +12,7 @@ import {
 } from "@/lib/github";
 import {
   enqueueDevTask,
+  enqueueMockupTask,
   enqueueReviewTask,
   enqueueTestcaseTask,
   ENGINES,
@@ -31,11 +32,13 @@ const BodySchema = z.object({
     "merge_pr",
     "sync_github",
     "save_tests",
+    "generate_mockup",
   ]),
   reason: z.string().optional(),
   engine: z.string().optional(),
   model: z.string().optional(),
   effort: z.enum(["low", "medium", "high"]).optional(),
+  fallback: z.boolean().optional(),
   testCases: z
     .array(
       z.object({
@@ -67,9 +70,19 @@ export const POST = apiHandler(
     const effort = parsed.data.effort ?? plan?.effort;
     if (!ENGINES[engine]) return badRequest(`不支持的引擎：${engine}`);
 
-    // sync_github / save_tests 不是纯状态机动作，单独处理
+    // sync_github / save_tests / generate_mockup 不是纯状态机动作，单独处理
     if (action === "sync_github") {
       return handleSync(id);
+    }
+    if (action === "generate_mockup") {
+      const canDo =
+        user.username === requirement.createdBy ||
+        user.role === "admin" ||
+        (user.role === "lead" && user.team === requirement.team);
+      if (!canDo) return forbidden("仅需求提交人或本组组长可生成渲染图");
+      const t = enqueueMockupTask(id, parsed.data.engine);
+      addEvent(id, "mockup_requested", user.username, `手动发起前端渲染图生成（${t.engine}）`);
+      return ok(id);
     }
     if (action === "save_tests") {
       if (requirement.status !== "testcases_generated") {
@@ -172,7 +185,7 @@ export const POST = apiHandler(
             },
           });
         }
-        enqueueDevTask(id, engine, { model, effort });
+        enqueueDevTask(id, engine, { model, effort, fallback: parsed.data.fallback });
         addEvent(
           id,
           "agent_task_enqueued",
@@ -196,7 +209,7 @@ export const POST = apiHandler(
             },
           });
         }
-        enqueueDevTask(id, engine, { model, effort });
+        enqueueDevTask(id, engine, { model, effort, fallback: parsed.data.fallback });
         addEvent(
           id,
           "dev_retriggered",

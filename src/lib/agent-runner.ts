@@ -18,6 +18,8 @@ import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from ".
 import { ensureGuardApproved } from "./guard";
 import { getDefaultBranch } from "./github";
 import { DATA_DIR, prepareRepoWorkspace, repoWorkspaceDir } from "./repo-index";
+import { ensureUploadsDir, mockupPath, uploadsDir } from "./uploads";
+import { listAttachments } from "./db";
 
 const execFileP = promisify(execFile);
 
@@ -32,6 +34,7 @@ export type Effort = "low" | "medium" | "high";
 export interface ExecOptions {
   model?: string;
   effort?: Effort;
+  fallback?: boolean; // 额度受限时自动切换备用引擎重试（启动时勾选）
 }
 
 interface EngineDef {
@@ -61,11 +64,14 @@ export const ENGINES: Record<string, EngineDef> = {
       "claude-sonnet-5",
       "claude-haiku-4-5-20251001",
     ]),
-    // -p 无头模式；权限跳过仅作用于隔离工作区
+    // -p 无头模式；stream-json 让开发过程实时写日志（前端"最新进度"可见），权限跳过仅作用于隔离工作区
     args: (prompt, opts) => [
       "-p",
       prompt,
       "--dangerously-skip-permissions",
+      "--output-format",
+      "stream-json",
+      "--verbose",
       ...(opts.model ? ["--model", opts.model] : []),
     ],
     // Claude Code 的推理强度用思考 token 预算控制
@@ -172,7 +178,10 @@ function buildPrompt(req: Requirement, codegraph = "", fixFeedback = ""): string
 
 // 任务只入队，执行由独立的 runner 守护进程（npm run runner）认领。
 // 门户重启不再中断任务；runner 重启会把孤儿任务标记失败，可一键重触发。
-function assertNoActiveTask(requirementId: number, kind: "develop" | "review" | "testcases") {
+function assertNoActiveTask(
+  requirementId: number,
+  kind: "develop" | "review" | "testcases" | "mockup"
+) {
   const last = latestAgentTask(requirementId, kind);
   if (
     last &&
@@ -181,7 +190,9 @@ function assertNoActiveTask(requirementId: number, kind: "develop" | "review" | 
     (last.status === "queued" ||
       (last.status === "running" && (last.pid == null || pidAlive(last.pid))))
   ) {
-    throw new Error(`该需求已有排队/进行中的${kind === "develop" ? "开发" : kind === "review" ? "审查" : "用例生成"}任务（#${last.id}）`);
+    const label =
+      kind === "develop" ? "开发" : kind === "review" ? "审查" : kind === "mockup" ? "渲染图" : "用例生成";
+    throw new Error(`该需求已有排队/进行中的${label}任务（#${last.id}）`);
   }
 }
 
@@ -191,7 +202,14 @@ export function enqueueDevTask(
   opts: ExecOptions = {}
 ): AgentTaskRow {
   assertNoActiveTask(requirementId, "develop");
-  return createAgentTask(requirementId, engine, opts.model ?? "", opts.effort ?? "");
+  return createAgentTask(
+    requirementId,
+    engine,
+    opts.model ?? "",
+    opts.effort ?? "",
+    "develop",
+    opts.fallback ? 1 : 0
+  );
 }
 
 // PR 审查任务入队：默认 codex（可用 AGENT_REVIEW_ENGINE 覆盖），与开发引擎交叉互审
@@ -210,6 +228,21 @@ export function enqueueTestcaseTask(requirementId: number, engine?: string): Age
   return createAgentTask(requirementId, genEngine, "", "", "testcases");
 }
 
+// 前端渲染图任务入队：需求提交后自动触发，AI 判定是否前端需求并生成单文件 HTML 原型
+export function enqueueMockupTask(requirementId: number, engine?: string): AgentTaskRow {
+  const mkEngine = engine ?? process.env.AGENT_MOCKUP_ENGINE ?? "codex";
+  if (!ENGINES[mkEngine]) throw new Error(`不支持的渲染图引擎：${mkEngine}`);
+  assertNoActiveTask(requirementId, "mockup");
+  return createAgentTask(requirementId, mkEngine, "", "", "mockup");
+}
+
+// 额度/限流类错误特征（claude 订阅 session limit、网关 429 等）
+export function isQuotaError(message: string): boolean {
+  return /session limit|usage limit|rate.?limit|hit your.*limit|quota|429|too many requests/i.test(
+    message
+  );
+}
+
 // runner 守护进程的任务分发入口
 export async function executeTask(taskId: number): Promise<void> {
   const task = getAgentTask(taskId);
@@ -217,9 +250,36 @@ export async function executeTask(taskId: number): Promise<void> {
   try {
     if (task.kind === "develop") await runTask(taskId);
     else if (task.kind === "review") await runReviewTask(taskId);
+    else if (task.kind === "mockup") await runMockupTask(taskId);
     else await runTestcaseTask(taskId);
   } catch (err) {
-    updateAgentTask(taskId, { status: "failed", error: String(err), pid: null });
+    const message = String(err);
+    updateAgentTask(taskId, { status: "failed", error: message, pid: null });
+
+    // 额度自动降级：勾选了 fallback 的开发任务遇额度类失败 → 自动用备用引擎重跑一次
+    if (task.kind === "develop" && task.fallback && isQuotaError(message)) {
+      const other = task.engine === "claude" ? "codex" : "claude";
+      if (ENGINES[other]) {
+        try {
+          const t = createAgentTask(
+            task.requirementId,
+            other,
+            ENGINES[other].models[0] ?? "",
+            task.effort,
+            "develop",
+            0 // 备用引擎只重试一次，不再来回切换
+          );
+          addEvent(
+            task.requirementId,
+            "engine_fallback",
+            "system",
+            `${task.engine} 额度受限，自动切换备用引擎 ${other}/${t.model} 重试（任务 #${t.id}）`
+          );
+        } catch (e) {
+          console.error("额度降级入队失败:", e);
+        }
+      }
+    }
   }
 }
 
@@ -295,6 +355,32 @@ async function runTask(taskId: number) {
       : "";
     const cgHint = codegraphHint(indexed);
 
+    // 1.5 需求附件（设计图/文档/渲染原型）拷入工作区，供 agent 查看参考
+    let attHint = "";
+    const atts = listAttachments(req.id);
+    const attDir = path.join(workspace, ".portal-attachments");
+    fs.rmSync(attDir, { recursive: true, force: true });
+    const attFiles: string[] = [];
+    for (const a of atts) {
+      if (fs.existsSync(a.storedPath)) {
+        fs.mkdirSync(attDir, { recursive: true });
+        fs.copyFileSync(a.storedPath, path.join(attDir, a.filename));
+        attFiles.push(a.filename);
+      }
+    }
+    if (fs.existsSync(mockupPath(req.id))) {
+      fs.mkdirSync(attDir, { recursive: true });
+      fs.copyFileSync(mockupPath(req.id), path.join(attDir, "评审通过的前端渲染原型.html"));
+      attFiles.push("评审通过的前端渲染原型.html");
+    }
+    if (attFiles.length > 0) {
+      const excl = path.join(workspace, ".git", "info", "exclude");
+      if (!fs.readFileSync(excl, "utf-8").includes(".portal-attachments/")) {
+        fs.appendFileSync(excl, "\n.portal-attachments/\n");
+      }
+      attHint = `\n## 需求附件（位于 .portal-attachments/ 目录，图片/原型可直接查看参考，勿提交该目录）\n${attFiles.map((f) => `- ${f}`).join("\n")}`;
+    }
+
     // 2. 本地 CLI 开发
     const engine = ENGINES[task.engine];
     if (!engine) throw new Error(`未知引擎：${task.engine}`);
@@ -305,7 +391,7 @@ async function runTask(taskId: number) {
     updateAgentTask(task.id, { step: isFix ? "fix" : "develop" });
     logLine(`run ${task.engine}${isFix ? " [修复迭代]" : ""} (model=${task.model || "默认"}, effort=${task.effort || "默认"})`);
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(engine.cmd, engine.args(buildPrompt(req, cgHint, fixFeedback), opts), {
+      const child = spawn(engine.cmd, engine.args(buildPrompt(req, cgHint + attHint, fixFeedback), opts), {
         cwd: workspace,
         env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN, ...engine.env(opts) },
         stdio: ["ignore", log, log],
@@ -408,6 +494,7 @@ async function runTask(taskId: number) {
     updateAgentTask(task.id, { status: "failed", error: message, pid: null });
     addEvent(req.id, "agent_task_failed", "system", `Agent 任务 #${task.id} 失败：${message}`);
     logLine(`FAILED: ${message}`);
+    throw err; // 上抛给 executeTask 做额度降级判断
   } finally {
     fs.closeSync(log);
   }
@@ -455,6 +542,84 @@ async function runTestcaseTask(taskId: number) {
       ? `本地模板生成 ${cases.length} 条用例（${task.engine} 生成失败的兜底）`
       : `本地 ${source} 生成 ${cases.length} 条测试用例`
   );
+}
+
+// 前端渲染图任务：AI 判定是否前端需求；是则生成单文件 HTML 原型供评审预览
+async function runMockupTask(taskId: number) {
+  const task = getAgentTask(taskId);
+  if (!task) throw new Error("任务不存在");
+  const req = getRequirement(task.requirementId);
+  if (!req) throw new Error("需求不存在");
+
+  updateAgentTask(task.id, { status: "running", step: "guard" });
+  await ensureGuardApproved(req.id); // 防滥用门审（未过审的需求不烧渲染额度）
+
+  updateAgentTask(task.id, { step: "mockup" });
+  addEvent(req.id, "mockup_task_started", "system", `渲染图任务 #${task.id}（${task.engine}）启动`);
+
+  const dir = ensureUploadsDir(req.id);
+  const atts = listAttachments(req.id);
+  const prompt = [
+    "你是前端原型设计师。先判断下述需求是否涉及前端界面/页面/组件的改动：",
+    "- 若【不涉及】前端 UI（纯后端/脚本/数据库等），只输出四个字母：SKIP",
+    "- 若【涉及】，输出一个完整的单文件 HTML 原型：内联 CSS（可少量内联 JS），使用贴近需求的模拟数据，",
+    "  中文界面，布局风格现代简洁，尽量还原需求描述的界面效果。只输出 HTML，以 <!DOCTYPE html> 开头，不要任何解释或代码围栏。",
+    "",
+    `需求标题：${req.title}`,
+    `需求描述：${req.description}`,
+    req.testScenarios ? `核心场景：${req.testScenarios}` : "",
+    atts.length
+      ? `需求附件（当前目录下可直接查看，图片请参考其设计）：${atts.map((a) => path.basename(a.storedPath)).join("、")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  // 在附件目录执行，agent 可读取图片附件作为参考
+  let out: string;
+  if (task.engine === "codex") {
+    const outFile = path.join(dir, ".mockup-out");
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        "codex",
+        ["exec", "--skip-git-repo-check", "--output-last-message", outFile, prompt],
+        { cwd: dir, stdio: ["ignore", "ignore", "pipe"] }
+      );
+      updateAgentTask(task.id, { pid: child.pid ?? null });
+      const t = setTimeout(() => (child.kill("SIGKILL"), reject(new Error("渲染图生成超时"))), 10 * 60_000);
+      child.on("error", (e) => (clearTimeout(t), reject(e)));
+      child.on("exit", (c) => {
+        clearTimeout(t);
+        updateAgentTask(task.id, { pid: null });
+        c === 0 ? resolve() : reject(new Error(`codex 退出码 ${c}`));
+      });
+    });
+    out = fs.readFileSync(outFile, "utf-8");
+    fs.rmSync(outFile, { force: true });
+  } else {
+    const r = await execFileP("claude", ["-p", prompt, "--dangerously-skip-permissions"], {
+      cwd: dir,
+      timeout: 10 * 60_000,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    out = r.stdout;
+  }
+
+  const trimmed = out.trim();
+  if (/^SKIP\b/m.test(trimmed.slice(0, 200)) && !/<!DOCTYPE|<html/i.test(trimmed)) {
+    fs.rmSync(mockupPath(req.id), { force: true });
+    updateAgentTask(task.id, { status: "succeeded", step: "done", result: "AI 判定非前端需求，未生成渲染图" });
+    addEvent(req.id, "mockup_skipped", "system", "AI 判定非前端需求，未生成渲染图");
+    return;
+  }
+  const start = trimmed.search(/<!DOCTYPE|<html/i);
+  if (start < 0) throw new Error("渲染图输出中未找到 HTML");
+  let html = trimmed.slice(start);
+  const endIdx = html.lastIndexOf("</html>");
+  if (endIdx > 0) html = html.slice(0, endIdx + 7);
+  fs.writeFileSync(mockupPath(req.id), html, "utf-8");
+  updateAgentTask(task.id, { status: "succeeded", step: "done", result: `已生成前端渲染图（${Math.round(html.length / 1024)}KB）` });
+  addEvent(req.id, "mockup_generated", "system", "前端渲染图已生成，可在需求详情预览");
 }
 
 function buildReviewPrompt(req: Requirement, baseBranch: string): string {

@@ -65,6 +65,7 @@ export function db(): DatabaseSync {
       engine TEXT NOT NULL DEFAULT 'claude',
       model TEXT NOT NULL DEFAULT '',
       effort TEXT NOT NULL DEFAULT '',
+      fallback INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'queued',
       result TEXT,
       step TEXT NOT NULL DEFAULT '',
@@ -86,6 +87,16 @@ export function db(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      requirement_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      stored_path TEXT NOT NULL,
+      mime TEXT NOT NULL DEFAULT '',
+      size INTEGER NOT NULL DEFAULT 0,
+      uploaded_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
   `);
   migrate(_db);
@@ -126,6 +137,9 @@ function migrate(d: DatabaseSync) {
   }
   if (tcols.length > 0 && !tcols.some((c) => c.name === "beat_at")) {
     d.exec("ALTER TABLE agent_tasks ADD COLUMN beat_at TEXT NOT NULL DEFAULT ''");
+  }
+  if (tcols.length > 0 && !tcols.some((c) => c.name === "fallback")) {
+    d.exec("ALTER TABLE agent_tasks ADD COLUMN fallback INTEGER NOT NULL DEFAULT 0");
   }
   d.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')");
   const rcols = d.prepare("PRAGMA table_info(requirements)").all() as { name: string }[];
@@ -464,7 +478,7 @@ function rowToUser(r: any): User {
 
 /* ---------- 本地 Agent 任务 ---------- */
 
-export type AgentTaskKind = "develop" | "review" | "testcases";
+export type AgentTaskKind = "develop" | "review" | "testcases" | "mockup";
 
 export interface AgentTaskRow {
   id: number;
@@ -473,6 +487,7 @@ export interface AgentTaskRow {
   engine: string;
   model: string;
   effort: string;
+  fallback: 0 | 1; // 额度受限时是否自动切换备用引擎重试
   result: string | null;
   status: "queued" | "running" | "succeeded" | "failed";
   step: string;
@@ -493,6 +508,7 @@ function rowToTask(r: any): AgentTaskRow {
     engine: r.engine,
     model: r.model ?? "",
     effort: r.effort ?? "",
+    fallback: r.fallback ?? 0,
     result: r.result,
     status: r.status,
     step: r.step,
@@ -511,13 +527,14 @@ export function createAgentTask(
   engine: string,
   model = "",
   effort = "",
-  kind: AgentTaskKind = "develop"
+  kind: AgentTaskKind = "develop",
+  fallback: 0 | 1 = 0
 ): AgentTaskRow {
   const res = db()
     .prepare(
-      "INSERT INTO agent_tasks (requirement_id, engine, model, effort, kind) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO agent_tasks (requirement_id, engine, model, effort, kind, fallback) VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .run(requirementId, engine, model, effort, kind);
+    .run(requirementId, engine, model, effort, kind, fallback);
   return getAgentTask(Number(res.lastInsertRowid))!;
 }
 
@@ -573,6 +590,64 @@ export function failStaleRunningTasks(isAlive: (pid: number | null) => boolean):
     }
   }
   return n;
+}
+
+/* ---------- 需求附件 ---------- */
+
+export interface AttachmentRow {
+  id: number;
+  requirementId: number;
+  filename: string;
+  storedPath: string;
+  mime: string;
+  size: number;
+  uploadedBy: string;
+  createdAt: string;
+}
+
+function rowToAttachment(r: any): AttachmentRow {
+  return {
+    id: r.id,
+    requirementId: r.requirement_id,
+    filename: r.filename,
+    storedPath: r.stored_path,
+    mime: r.mime,
+    size: r.size,
+    uploadedBy: r.uploaded_by,
+    createdAt: r.created_at,
+  };
+}
+
+export function addAttachment(input: {
+  requirementId: number;
+  filename: string;
+  storedPath: string;
+  mime: string;
+  size: number;
+  uploadedBy: string;
+}): AttachmentRow {
+  const res = db()
+    .prepare(
+      "INSERT INTO attachments (requirement_id, filename, stored_path, mime, size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    .run(input.requirementId, input.filename, input.storedPath, input.mime, input.size, input.uploadedBy);
+  return getAttachment(Number(res.lastInsertRowid))!;
+}
+
+export function getAttachment(id: number): AttachmentRow | null {
+  const r = db().prepare("SELECT * FROM attachments WHERE id = ?").get(id);
+  return r ? rowToAttachment(r) : null;
+}
+
+export function listAttachments(requirementId: number): AttachmentRow[] {
+  const rows = db()
+    .prepare("SELECT * FROM attachments WHERE requirement_id = ? ORDER BY id")
+    .all(requirementId) as any[];
+  return rows.map(rowToAttachment);
+}
+
+export function deleteAttachment(id: number) {
+  db().prepare("DELETE FROM attachments WHERE id = ?").run(id);
 }
 
 /* ---------- runner 心跳与自愈 ---------- */

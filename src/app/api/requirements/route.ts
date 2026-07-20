@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createRequirement, getRepoByName, listRequirements } from "@/lib/db";
 import { canUseRepo } from "@/lib/repo-access";
+import { enqueueMockupTask } from "@/lib/agent-runner";
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest } from "@/lib/api";
 
@@ -35,5 +36,11 @@ export const POST = apiHandler(async (req: NextRequest) => {
   const denied = canUseRepo(repo, user);
   if (denied) return badRequest(denied);
   const requirement = createRequirement({ ...parsed.data, createdBy: user.username });
+  // 前端渲染图：提交后自动入队（AI 判定是否前端需求；执行前会过防滥用门审）
+  try {
+    enqueueMockupTask(requirement.id);
+  } catch (e) {
+    console.error("渲染图任务入队失败:", e);
+  }
   return NextResponse.json({ requirement }, { status: 201 });
 });

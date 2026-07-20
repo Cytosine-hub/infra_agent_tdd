@@ -24,20 +24,23 @@ export default function ExecPlanCard({
   starting,
   startLabel = "🚀 启动 Agent 开发",
   startingLabel = "创建 Issue 中…",
+  disabled = false,
 }: {
   savedPlan: ExecPlan | null;
   onEvaluate: () => Promise<ExecPlan | null>;
-  onStart: (choice: { engine: string; model: string; effort: string }) => void;
+  onStart: (choice: { engine: string; model: string; effort: string; fallback: boolean }) => void;
   evaluating: boolean;
   starting: boolean;
   startLabel?: string;
   startingLabel?: string;
+  disabled?: boolean; // 任务执行中禁用启动（防重复触发）
 }) {
   const [engines, setEngines] = useState<EngineInfo[]>([]);
   const [plan, setPlan] = useState<ExecPlan | null>(savedPlan);
   const [engine, setEngine] = useState(savedPlan?.engine ?? "");
   const [model, setModel] = useState(savedPlan?.model ?? "");
   const [effort, setEffort] = useState(savedPlan?.effort ?? "medium");
+  const [fallback, setFallback] = useState(true); // 额度受限自动切换备用引擎（默认开）
 
   useEffect(() => {
     fetch("/api/agent-engines")
@@ -136,12 +139,22 @@ export default function ExecPlanCard({
         </div>
       </div>
 
+      <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-500">
+        <input
+          type="checkbox"
+          checked={fallback}
+          onChange={(e) => setFallback(e.target.checked)}
+          className="h-3.5 w-3.5 accent-zinc-900"
+        />
+        额度受限时自动切换备用引擎重试（claude ⇄ codex）
+      </label>
+
       <button
         className="btn-primary"
-        disabled={starting || evaluating || !engine}
-        onClick={() => onStart({ engine, model, effort })}
+        disabled={starting || evaluating || disabled || !engine}
+        onClick={() => onStart({ engine, model, effort, fallback })}
       >
-        {starting ? startingLabel : startLabel}
+        {disabled && !starting ? "任务执行中…" : starting ? startingLabel : startLabel}
       </button>
     </div>
   );

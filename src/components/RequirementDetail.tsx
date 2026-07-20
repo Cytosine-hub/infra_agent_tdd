@@ -6,6 +6,9 @@ import StatusBadge from "@/components/StatusBadge";
 import AgentRuns from "@/components/AgentRuns";
 import LocalAgentTask from "@/components/LocalAgentTask";
 import ExecPlanCard from "@/components/ExecPlanCard";
+import AttachmentsCard from "@/components/AttachmentsCard";
+import MockupCard from "@/components/MockupCard";
+import type { AgentTaskRow } from "@/lib/db";
 import type { ExecPlan } from "@/lib/types";
 
 type ActionName =
@@ -19,7 +22,8 @@ type ActionName =
   | "review_pr"
   | "merge_pr"
   | "sync_github"
-  | "save_tests";
+  | "save_tests"
+  | "generate_mockup";
 
 export default function RequirementDetail({
   initialRequirement,
@@ -49,24 +53,33 @@ export default function RequirementDetail({
     }
   }, [initialRequirement.id]);
 
-  // 用例生成是异步任务：轮询其状态，生成中禁用按钮、完成后刷新
-  const genPrev = useRef(false);
+  // 统一任务活跃轮询：所有启动类按钮在对应任务执行中一律禁用（防重复触发）
+  const [mockupTask, setMockupTask] = useState<AgentTaskRow | null>(null);
+  const [taskActive, setTaskActive] = useState({ dev: false, review: false, testcases: false, mockup: false });
+  const activePrev = useRef("");
   useEffect(() => {
-    const watching = ["requirement_approved", "testcases_generated", "testcases_rejected"].includes(
-      req.status
-    );
-    if (!watching) return; // 非该阶段不轮询（生成按钮也不渲染，genActive 残留无影响）
     let stop = false;
+    const isActive = (t: AgentTaskRow | null) =>
+      !!t && (t.status === "queued" || t.status === "running");
     const poll = () => {
       fetch(`/api/requirements/${initialRequirement.id}/agent-task`)
-        .then((r) => (r.ok ? r.json() : { testcases: null }))
-        .then((d) => {
+        .then((r) => (r.ok ? r.json() : {}))
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((d: any) => {
           if (stop) return;
-          const t = d.testcases;
-          const active = !!t && (t.status === "queued" || t.status === "running");
-          setGenActive(active);
-          if (genPrev.current && !active) refresh(); // 刚结束 → 拉新状态/用例
-          genPrev.current = active;
+          setMockupTask(d.mockup ?? null);
+          const next = {
+            dev: isActive(d.task),
+            review: isActive(d.review),
+            testcases: isActive(d.testcases),
+            mockup: isActive(d.mockup),
+          };
+          setTaskActive(next);
+          setGenActive(next.testcases);
+          const sig = JSON.stringify(next);
+          // 任务活跃状态发生变化 → 刷新需求（状态流转/用例写入/渲染图生成）
+          if (activePrev.current && activePrev.current !== sig) refresh();
+          activePrev.current = sig;
         });
     };
     poll();
@@ -75,7 +88,7 @@ export default function RequirementDetail({
       stop = true;
       clearInterval(timer);
     };
-  }, [req.status, initialRequirement.id, refresh]);
+  }, [initialRequirement.id, refresh]);
 
   async function evaluatePlan(): Promise<ExecPlan | null> {
     setEvaluating(true);
@@ -203,6 +216,21 @@ export default function RequirementDetail({
             </>
           )}
         </section>
+
+        {/* 附件 */}
+        <AttachmentsCard
+          requirementId={req.id}
+          canManage={isRequester || isLead}
+        />
+
+        {/* 前端渲染图（AI 判定前端需求后生成，供评审预览） */}
+        <MockupCard
+          requirementId={req.id}
+          mockupTask={mockupTask}
+          canGenerate={isRequester || isLead}
+          onGenerate={() => act("generate_mockup")}
+          busy={busy === "generate_mockup"}
+        />
 
         {/* 测试用例 */}
         {req.testCases && (
@@ -409,6 +437,7 @@ export default function RequirementDetail({
                 onEvaluate={evaluatePlan}
                 evaluating={evaluating}
                 starting={busy === "start_dev"}
+                disabled={taskActive.dev}
                 onStart={(choice) => act("start_dev", choice)}
               />
             )}
@@ -434,6 +463,7 @@ export default function RequirementDetail({
                 onEvaluate={evaluatePlan}
                 evaluating={evaluating}
                 starting={busy === "retrigger_dev"}
+                disabled={taskActive.dev || taskActive.review}
                 onStart={(choice) => act("retrigger_dev", choice)}
                 startLabel="🔁 重新触发开发（按上方方案）"
                 startingLabel="触发中…"

@@ -14,6 +14,7 @@ const KIND_LABELS: Record<string, string> = {
   testcases: "📝 用例生成",
   develop: "🛠 开发",
   review: "🧐 PR 审查",
+  mockup: "🎨 渲染图",
 };
 
 const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
@@ -29,6 +30,7 @@ const STEP_LABELS: Record<string, string> = {
   clone: "拉取代码",
   index: "建代码索引",
   generate: "生成用例",
+  mockup: "生成渲染图",
   develop: "编码中",
   fix: "按审查修复",
   verify: "测试校验",

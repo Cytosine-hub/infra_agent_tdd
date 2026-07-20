@@ -39,6 +39,8 @@ export default function NewRequirementPage() {
     });
   }, []);
 
+  const [files, setFiles] = useState<File[]>([]);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -49,11 +51,25 @@ export default function NewRequirementPage() {
       body: JSON.stringify(form),
     });
     const data = await res.json();
-    setBusy(false);
     if (!res.ok) {
+      setBusy(false);
       setError(data.error ?? "提交失败");
       return;
     }
+    // 需求创建成功后上传附件（失败不阻断，详情页可补传）
+    if (files.length > 0) {
+      const fd = new FormData();
+      files.forEach((f) => fd.append("file", f));
+      const up = await fetch(`/api/requirements/${data.requirement.id}/attachments`, {
+        method: "POST",
+        body: fd,
+      });
+      if (!up.ok) {
+        const e2 = await up.json().catch(() => ({}));
+        alert(`需求已创建，但附件上传失败：${e2.error ?? up.status}。可在详情页重新上传。`);
+      }
+    }
+    setBusy(false);
     router.push(`/requirements/${data.requirement.id}`);
   }
 
@@ -154,6 +170,28 @@ export default function NewRequirementPage() {
             onChange={(e) => setForm({ ...form, testScenarios: e.target.value })}
             placeholder={"选择最近 7 天，页面展示对应区间的慢 SQL\n无数据实例展示空态提示\n非本组用户无法看到管理入口"}
           />
+        </div>
+
+        <div>
+          <label className="label">附件（可选：设计图、原型截图、文档等，单个 ≤15MB）</label>
+          <input
+            type="file"
+            multiple
+            className="block w-full text-sm text-zinc-500 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-900 file:px-3 file:py-1.5 file:text-sm file:text-white hover:file:bg-zinc-700"
+            onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+          />
+          {files.length > 0 && (
+            <ul className="mt-1.5 text-xs text-zinc-500">
+              {files.map((f) => (
+                <li key={f.name}>
+                  📎 {f.name}（{Math.ceil(f.size / 1024)} KB）
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-1 text-xs text-zinc-400">
+            涉及前端界面的需求，提交后系统会自动生成渲染效果图供评审。
+          </p>
         </div>
 
         {error && (

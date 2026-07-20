@@ -305,6 +305,20 @@ runner 全局串行执行，故同一项目的所有任务（开发/修复/审�
 - middleware_resource_manager 主线切换：`feature/ops-agent`（领先 314 提交）强推为 master（旧 master 备份于 tag `backup/master-20260719`），
   过时 PR/分支清理，仓库按新主线**全量重新入驻**（删旧工作区与旧索引，全新 clone + codegraph init + agent.md 重生成）。
 
+### v17（2026-07-19）：需求附件 + 前端渲染图 + 按钮防重 + 额度降级 + claude 流式进度
+
+- **需求附件**：提交需求可上传图片/文档附件（≤15MB/个，≤20 个；详情页可补传/删除，图片缩略预览）。
+  附件在开发任务时自动拷入工作区 `.portal-attachments/`（git 排除），agent 可直接查看设计图。
+- **前端渲染图**：需求提交后自动入队 mockup 任务（先过防滥用门审）——AI 判定是否前端需求：
+  非前端输出 SKIP；前端则生成单文件 HTML 原型（内联 CSS、模拟数据），评审时详情页 iframe（sandbox）预览、
+  可新窗口打开、可重新生成。渲染原型也会随附件带给开发 agent 参考。
+- **按钮防重**：详情页统一轮询任务活跃状态，启动开发/重触发/生成用例/审查/渲染图按钮在对应任务
+  排队或运行中一律禁用（API 层 assertNoActiveTask 双保险）。
+- **额度自动降级（启动选项）**：执行方案卡片新增复选框「额度受限时自动切换备用引擎重试」（默认开）；
+  开发任务遇 session limit / rate limit / 429 类失败时自动用备用引擎（claude⇄codex）重跑一次（只切一次防来回横跳）。
+- **claude 流式进度**：claude 开发/修复任务改用 `--output-format stream-json --verbose`，
+  过程实时写日志；进度接口把 JSON 事件流转译成人类可读（🔧 工具调用/💬 输出/✅ 完成），前端「最新进度」实时可见。
+
 ## 6. 后续演进
 
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。
