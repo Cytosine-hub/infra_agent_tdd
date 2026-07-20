@@ -29,5 +29,7 @@
     "tsx": "^4.23.1",
     "typescript": "^5",
     "vitest": "^4.1.10"
-  }
+  },
+  "license": "AGPL-3.0-only",
+  "author": "Cytosine-hub"
 }

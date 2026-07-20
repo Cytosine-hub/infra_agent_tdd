@@ -59,3 +59,14 @@ src/app/          # 页面：工作台看板、提交需求、需求详情（审
 github-templates/ # 拷贝到各目标仓库的 GitHub Actions 与 agent.md 模板
 docs/DESIGN.md    # 架构与设计决策
 ```
+
+## 许可证（License）
+
+本项目采用**双许可**模式：
+
+- **[AGPL-3.0](LICENSE)**：默认许可。自由使用/修改/分发，但衍生作品与**通过网络提供的服务**必须同样以 AGPL-3.0 开源（AGPL 第 13 条）。
+- **[商业授权](COMMERCIAL-LICENSE.md)**：无法遵守 AGPL 条款的商业使用（闭源产品/SaaS/企业集成等），请通过 GitHub Issues 联系项目维护者购买商业授权。
+
+向本项目提交贡献即表示同意 [CONTRIBUTING.md](CONTRIBUTING.md) 中的贡献者许可协议（CLA）。
+
+Copyright (c) 2026 Cytosine-hub
