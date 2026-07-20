@@ -1,5 +1,7 @@
 # 集成中心需求交付门户
 
+> **主仓库**：[GitLab](http://gitlab.shchangjian.com.cn/zhugl/infra_agent_tdd)（内部主线）· 自动镜像到 [GitHub](https://github.com/Cytosine-hub/infra_agent_tdd)（对外开源只读）。
+
 集成中心的需求交付门户：需求收集 → 组长审核 → AI 生成测试用例 → 双方审核 → Claude Code/Codex Agent 开发 → 测试 → GitHub CI/CD 的一体化工作流平台。设计文档见 [docs/DESIGN.md](docs/DESIGN.md)。
 
 ## 本地部署
