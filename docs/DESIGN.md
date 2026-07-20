@@ -339,8 +339,25 @@ runner 全局串行执行，故同一项目的所有任务（开发/修复/审�
   （如"增加并发场景用例""改为深色主题"），要求存入任务（agent_tasks.extra）并注入生成提示词，
   事件记录附带的要求内容。
 
+### v20（2026-07-20）：一仓一 token + 多主机（GitLab 主仓库）接入
+
+- **每仓库专用访问令牌（一仓一 token）**：添加/管理仓库时可为该仓库绑定专用 PAT，用于
+  clone/push。令牌只存库不回传前端（`repos.token`，接口只暴露 `hasToken` 布尔），
+  留空则回退全局 `GITHUB_TOKEN`。仓库列表支持「设置/更新 token」。
+- **多主机支持**：新增 `repos.host`，可指向 github.com 或自建 GitLab（可带 `http://` 前缀，
+  兼容 HTTP-only 的内网 GitLab）。`cloneUrl` 按主机选择协议与用户名
+  （GitHub=x-access-token / GitLab=oauth2）。默认分支探测改为主机无关：
+  非 github 用 `git ls-remote --symref` 读取远程 HEAD，避免写死 main 在 master 仓库失败。
+- **已知边界（路线图）**：入驻的 agent.md 开 PR、以及需求开发闭环的
+  建 Issue / 建 PR / 合并（`src/lib/github.ts`、`onboard.ts` 的 `openAgentMdPr`）
+  目前仅走 GitHub API（Octokit）。绑定到自建 GitLab 的仓库可完成 clone/索引/入驻，
+  但**全链路开发流水线（Issue/MR/合并自动化）需补一层 GitLab API 适配**——见下。
+
 ## 6. 后续演进
 
+- **GitLab API 适配层**：把 `github.ts` 的 Issue/PR/合并/运行状态、`onboard.ts` 的 agent.md MR
+  抽象为「代码托管提供方」接口，按 `repo.host` 分派 GitHub/GitLab 实现，
+  使自建 GitLab 主仓库也能跑完整需求交付流水线（当前仅 GitHub 全链路可用）。
 - GitHub Webhook 替代手动同步；企业微信/钉钉通知审批人。
 - 需求与 GitHub Projects 看板双向同步。
 - Codex 支持：目标仓库同时维护 AGENTS.md，workflow 中按标签选择 agent。

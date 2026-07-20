@@ -2,10 +2,16 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import { Octokit } from "@octokit/rest";
-import { getRepoById, updateRepoOnboard } from "./db";
+import { getRepoById, getRepoHost, updateRepoOnboard } from "./db";
 import { ENGINES } from "./agent-runner";
-import { prepareRepoWorkspace, repoWorkspaceDir } from "./repo-index";
+import { prepareRepoWorkspace, remoteDefaultBranch, repoWorkspaceDir } from "./repo-index";
 import { getDefaultBranch } from "./github";
+
+// github.com 用 GitHub API 拿默认分支；自建 GitLab 等其它主机用 git 探测（主机无关）。
+async function resolveDefaultBranch(repoFullName: string): Promise<string> {
+  const host = getRepoHost(repoFullName);
+  return host === "github.com" ? getDefaultBranch(repoFullName) : remoteDefaultBranch(repoFullName);
+}
 
 // 仓库入驻：加入门户时后台执行——建持久 codegraph 索引 + 分析生成/补齐 agent.md 并开 PR。
 // 完成前该仓库不能启动开发任务（门禁见 actions 路由）。
@@ -178,13 +184,14 @@ export async function runRepoOnboard(repoId: number): Promise<void> {
   try {
     // 1. 共享工作区（clone + 切默认分支 + codegraph 索引）
     updateRepoOnboard(repoId, { onboardStep: "建代码索引" });
-    const base = await getDefaultBranch(repo.fullName);
+    const base = await resolveDefaultBranch(repo.fullName);
     const { indexed } = await prepareRepoWorkspace(repo.fullName, { base });
     updateRepoOnboard(repoId, { indexedAt: new Date().toISOString().replace("T", " ").slice(0, 19) });
 
     // 2. agent.md：分析生成/补齐 → 开 PR（best-effort，不阻塞就绪）
+    // 开 PR 走 GitHub API，暂仅支持 github.com；自建 GitLab 的 MR 自动化待补（见路线图）。
     let prUrl = "";
-    if (process.env.GITHUB_TOKEN) {
+    if (process.env.GITHUB_TOKEN && getRepoHost(repo.fullName) === "github.com") {
       try {
         updateRepoOnboard(repoId, { onboardStep: "生成 agent.md" });
         const mirror = repoWorkspaceDir(repo.fullName);

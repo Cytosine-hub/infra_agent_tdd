@@ -21,6 +21,8 @@ export default function RepoManager() {
   const [fullName, setFullName] = useState("");
   const [description, setDescription] = useState("");
   const [team, setTeam] = useState("");
+  const [host, setHost] = useState("github.com");
+  const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -50,6 +52,21 @@ export default function RepoManager() {
     load();
   }
 
+  async function changeToken(id: number, hasToken: boolean) {
+    const token = window.prompt(
+      hasToken
+        ? "更新该仓库的专用访问令牌（留空并确定则清除，改用全局令牌）："
+        : "为该仓库设置专用访问令牌（GitLab/GitHub 的 PAT，用于 clone/push/建 Issue/PR）："
+    );
+    if (token === null) return;
+    await fetch("/api/repos", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action: "set_token", token }),
+    });
+    load();
+  }
+
   async function add(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -57,7 +74,7 @@ export default function RepoManager() {
     const res = await fetch("/api/repos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fullName, description, team }),
+      body: JSON.stringify({ fullName, description, team, host, token }),
     });
     const data = await res.json();
     setBusy(false);
@@ -68,6 +85,8 @@ export default function RepoManager() {
     setFullName("");
     setDescription("");
     setTeam("");
+    setHost("github.com");
+    setToken("");
     load();
   }
 
@@ -116,6 +135,26 @@ export default function RepoManager() {
             ))}
           </select>
         </div>
+        <div className="w-44">
+          <label className="label">代码托管主机</label>
+          <input
+            className="input"
+            value={host}
+            onChange={(e) => setHost(e.target.value)}
+            placeholder="github.com"
+          />
+        </div>
+        <div className="flex-1">
+          <label className="label">专用令牌（可选）</label>
+          <input
+            className="input"
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="留空则用全局令牌；一仓一 token"
+            autoComplete="off"
+          />
+        </div>
         <button className="btn-primary" disabled={busy}>
           添加
         </button>
@@ -146,6 +185,18 @@ export default function RepoManager() {
                   {r.team ? `${r.team}专属` : "公共"}
                 </span>
                 <OnboardBadge repo={r} />
+                {r.host && r.host !== "github.com" && (
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">
+                    {r.host}
+                  </span>
+                )}
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[11px] ${
+                    r.hasToken ? "bg-emerald-50 text-emerald-700" : "bg-zinc-100 text-zinc-500"
+                  }`}
+                >
+                  {r.hasToken ? "🔑 专用 token" : "全局 token"}
+                </span>
               </div>
               {r.description && <div className="text-xs text-zinc-500">{r.description}</div>}
               {r.onboardStatus === "failed" && r.onboardError && (
@@ -164,6 +215,12 @@ export default function RepoManager() {
               )}
             </div>
             <div className="flex shrink-0 items-center gap-3">
+              <button
+                className="text-xs text-zinc-500 hover:underline"
+                onClick={() => changeToken(r.id, r.hasToken)}
+              >
+                {r.hasToken ? "更新 token" : "设置 token"}
+              </button>
               {(r.onboardStatus === "ready" || r.onboardStatus === "failed") && (
                 <button
                   className="text-xs text-zinc-500 hover:underline"

@@ -56,7 +56,9 @@ export function db(): DatabaseSync {
       onboard_step TEXT NOT NULL DEFAULT '',
       onboard_error TEXT NOT NULL DEFAULT '',
       onboard_pr TEXT NOT NULL DEFAULT '',
-      indexed_at TEXT
+      indexed_at TEXT,
+      token TEXT NOT NULL DEFAULT '',
+      host TEXT NOT NULL DEFAULT 'github.com'
     );
     CREATE TABLE IF NOT EXISTS agent_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,6 +172,10 @@ function migrate(d: DatabaseSync) {
     d.exec("ALTER TABLE repos ADD COLUMN onboard_error TEXT NOT NULL DEFAULT ''");
     d.exec("ALTER TABLE repos ADD COLUMN onboard_pr TEXT NOT NULL DEFAULT ''");
     d.exec("ALTER TABLE repos ADD COLUMN indexed_at TEXT");
+  }
+  if (pcols.length > 0 && !pcols.some((c) => c.name === "token")) {
+    d.exec("ALTER TABLE repos ADD COLUMN token TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE repos ADD COLUMN host TEXT NOT NULL DEFAULT 'github.com'");
   }
 }
 
@@ -393,7 +399,21 @@ function rowToRepo(r: any): Repo {
     onboardError: r.onboard_error ?? "",
     onboardPr: r.onboard_pr ?? "",
     indexedAt: r.indexed_at ?? null,
+    hasToken: Boolean(r.token),
+    host: r.host ?? "github.com",
   };
+}
+
+// 内部使用：取仓库的原始 token（供 clone/push/API 认证，不经 API 暴露给前端）
+export function getRepoToken(fullName: string): string {
+  const r = db().prepare("SELECT token FROM repos WHERE full_name = ?").get(fullName) as
+    | { token: string }
+    | undefined;
+  return r?.token ?? "";
+}
+
+export function setRepoToken(id: number, token: string) {
+  db().prepare("UPDATE repos SET token = ? WHERE id = ?").run(token, id);
 }
 
 export function listRepos(): Repo[] {
@@ -406,14 +426,28 @@ export function getRepoByName(fullName: string): Repo | null {
   return r ? rowToRepo(r) : null;
 }
 
-export function addRepo(fullName: string, description = "", team = ""): Repo {
+export function addRepo(
+  fullName: string,
+  description = "",
+  team = "",
+  token = "",
+  host = "github.com"
+): Repo {
   // 新加仓库置 pending，由 runner 后台入驻（clone + codegraph 索引 + agent.md）
   db()
     .prepare(
-      "INSERT OR IGNORE INTO repos (full_name, description, team, onboard_status) VALUES (?, ?, ?, 'pending')"
+      "INSERT OR IGNORE INTO repos (full_name, description, team, token, host, onboard_status) VALUES (?, ?, ?, ?, ?, 'pending')"
     )
-    .run(fullName, description, team);
+    .run(fullName, description, team, token, host);
   return getRepoByName(fullName)!;
+}
+
+// 取仓库 host（clone/push 用）
+export function getRepoHost(fullName: string): string {
+  const r = db().prepare("SELECT host FROM repos WHERE full_name = ?").get(fullName) as
+    | { host: string }
+    | undefined;
+  return r?.host ?? "github.com";
 }
 
 export function getRepoById(id: number): Repo | null {

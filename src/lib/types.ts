@@ -80,6 +80,8 @@ export interface Repo {
   onboardError: string;
   onboardPr: string; // agent.md PR 链接（如有）
   indexedAt: string | null;
+  hasToken: boolean; // 是否绑定了专用 token（不暴露明文）
+  host: string; // 代码托管主机（github.com 或自建 GitLab 域名）
 }
 
 // 启动开发前的执行方案（AI 评估 + 人工可改）

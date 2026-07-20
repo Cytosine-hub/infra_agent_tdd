@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { addRepo, deleteRepo, getRepoById, listRepos, requeueRepoOnboard, teamExists } from "@/lib/db";
+import {
+  addRepo,
+  deleteRepo,
+  getRepoById,
+  listRepos,
+  requeueRepoOnboard,
+  setRepoToken,
+  teamExists,
+} from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { selectableRepos } from "@/lib/repo-access";
@@ -16,11 +24,11 @@ export const GET = apiHandler(async (req: NextRequest) => {
 });
 
 const AddSchema = z.object({
-  fullName: z
-    .string()
-    .regex(/^[\w.-]+\/[\w.-]+$/, "仓库格式应为 owner/repo"),
+  fullName: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "仓库格式应为 owner/repo"),
   description: z.string().default(""),
   team: z.string().default(""), // '' = 公共
+  host: z.string().default("github.com"), // 代码托管主机
+  token: z.string().default(""), // 该仓库专用访问令牌（可空则用全局）
 });
 
 // 仓库列表由组长/管理员维护
@@ -32,7 +40,15 @@ export const POST = apiHandler(async (req: NextRequest) => {
   if (parsed.data.team && !teamExists(parsed.data.team)) {
     return badRequest("归属小组不存在，请先在「小组管理」中添加");
   }
-  const repo = addRepo(parsed.data.fullName, parsed.data.description, parsed.data.team);
+  // 保留协议前缀（HTTP-only 的自建 GitLab 需要 http://），仅去掉多余的结尾斜杠
+  const host = (parsed.data.host || "github.com").replace(/\/+$/, "");
+  const repo = addRepo(
+    parsed.data.fullName,
+    parsed.data.description,
+    parsed.data.team,
+    parsed.data.token,
+    host
+  );
   return NextResponse.json({ repo }, { status: 201 });
 });
 
@@ -45,12 +61,16 @@ export const DELETE = apiHandler(async (req: NextRequest) => {
   return NextResponse.json({ ok: true });
 });
 
-// 重新入驻（重建索引 + 重新分析 agent.md）
+// action=reonboard 重新入驻；action=set_token 更新/清除专用令牌
 export const PATCH = apiHandler(async (req: NextRequest) => {
   const user = await requireUser();
   if (user.role === "member") return forbidden("仅组长或管理员可维护仓库列表");
-  const { id } = (await req.json()) as { id?: number };
-  if (!id || !getRepoById(id)) return badRequest("仓库不存在");
-  requeueRepoOnboard(id);
-  return NextResponse.json({ repo: getRepoById(id) });
+  const body = (await req.json()) as { id?: number; action?: string; token?: string };
+  if (!body.id || !getRepoById(body.id)) return badRequest("仓库不存在");
+  if (body.action === "set_token") {
+    setRepoToken(body.id, body.token ?? "");
+  } else {
+    requeueRepoOnboard(body.id);
+  }
+  return NextResponse.json({ repo: getRepoById(body.id) });
 });

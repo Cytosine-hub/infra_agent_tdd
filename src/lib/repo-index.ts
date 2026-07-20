@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import fs from "node:fs";
+import { getRepoHost, getRepoToken } from "./db";
 
 const execFileP = promisify(execFile);
 
@@ -16,11 +17,32 @@ export function repoWorkspaceDir(repoFullName: string): string {
 // 兼容旧名
 export const repoMirrorDir = repoWorkspaceDir;
 
+// 带认证的 clone/push URL：优先用仓库绑定的专用 token（一仓一 token），否则回退全局 GITHUB_TOKEN。
+// 支持不同主机（github.com / 自建 GitLab）；GitLab 用 oauth2 用户名，GitHub 用 x-access-token。
+// host 可携带协议前缀（如 http://gitlab.internal），用于 HTTP-only 的自建 GitLab；缺省按 https。
 export function cloneUrl(repoFullName: string): string {
-  const token = process.env.GITHUB_TOKEN;
-  return token
-    ? `https://x-access-token:${token}@github.com/${repoFullName}.git`
-    : `git@github.com:${repoFullName}.git`;
+  const repoToken = getRepoToken(repoFullName);
+  const raw = getRepoHost(repoFullName);
+  const scheme = raw.match(/^(https?):\/\//)?.[1] ?? "https";
+  const host = raw.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  const token = repoToken || (host === "github.com" ? process.env.GITHUB_TOKEN : "");
+  if (!token) return `git@${host}:${repoFullName}.git`;
+  const user = host === "github.com" ? "x-access-token" : "oauth2";
+  return `${scheme}://${user}:${token}@${host}/${repoFullName}.git`;
+}
+
+// 主机无关地探测远程默认分支（GitHub/GitLab 通用）：读取远程 HEAD 的 symref。
+// 拿不到时回退 main。用于入驻/切基线分支，避免写死 main 而在 master 仓库失败。
+export async function remoteDefaultBranch(repoFullName: string): Promise<string> {
+  try {
+    const { stdout } = await execFileP("git", ["ls-remote", "--symref", cloneUrl(repoFullName), "HEAD"], {
+      timeout: 60_000,
+    });
+    const m = stdout.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m);
+    return m?.[1] ?? "main";
+  } catch {
+    return "main";
+  }
 }
 
 export async function codegraphAvailable(): Promise<boolean> {
