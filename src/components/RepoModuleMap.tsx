@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { RepoModule } from "@/lib/types";
 
 interface Draft {
@@ -15,6 +15,7 @@ const EMPTY_DRAFT: Draft = { moduleKey: "", name: "", paths: "", description: ""
 export default function RepoModuleMap({ repoId }: { repoId: number }) {
   const [modules, setModules] = useState<RepoModule[]>([]);
   const [confirmed, setConfirmed] = useState(false);
+  const [mapStatus, setMapStatus] = useState(""); // '' | queued | running：AI 生成任务状态
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -23,20 +24,45 @@ export default function RepoModuleMap({ repoId }: { repoId: number }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
+  const refresh = useCallback(() => {
     fetch(`/api/repos/${repoId}/modules`)
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
-        if (cancelled || !data) return;
+        if (!data) return;
         setModules(data.modules ?? []);
         setConfirmed(Boolean(data.confirmed));
+        setMapStatus(data.mapStatus ?? "");
         setLoaded(true);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [repoId]);
+
+  useEffect(refresh, [refresh]);
+
+  // AI 生成进行中时轮询，完成后自动刷新出结果
+  useEffect(() => {
+    if (mapStatus !== "queued" && mapStatus !== "running") return;
+    const timer = setInterval(refresh, 4000);
+    return () => clearInterval(timer);
+  }, [mapStatus, refresh]);
+
+  const generating = mapStatus === "queued" || mapStatus === "running";
+
+  async function regenerate() {
+    if (
+      (modules.length > 0 || confirmed) &&
+      !window.confirm("AI 将重新分析仓库并覆盖当前模块地图（已确认状态会被重置，需重新确认）。继续？")
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const response = await fetch(`/api/repos/${repoId}/modules/generate`, { method: "POST" });
+    const data = await response.json();
+    setBusy(false);
+    if (!response.ok) return setError(data.error ?? "发起生成失败");
+    setMapStatus(data.status ?? "queued");
+    setExpanded(true);
+  }
 
   function edit(module: RepoModule) {
     setEditingId(module.id);
@@ -121,15 +147,23 @@ export default function RepoModuleMap({ repoId }: { repoId: number }) {
         >
           {expanded ? "收起模块地图" : `模块地图${loaded ? `（${modules.length}）` : ""}`}
         </button>
-        {loaded && (
-          <span
-            className={`rounded-full px-2 py-0.5 text-[11px] ${
-              confirmed ? "bg-emerald-50 text-emerald-700" : "bg-amber-100 text-amber-800"
-            }`}
-          >
-            {confirmed ? "已确认" : "待维护者确认"}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {generating && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2 py-0.5 text-[11px] text-sky-700">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+              AI 生成中…
+            </span>
+          )}
+          {loaded && (
+            <span
+              className={`rounded-full px-2 py-0.5 text-[11px] ${
+                confirmed ? "bg-emerald-50 text-emerald-700" : "bg-amber-100 text-amber-800"
+              }`}
+            >
+              {confirmed ? "已确认" : "待维护者确认"}
+            </span>
+          )}
+        </div>
       </div>
 
       {expanded && (
@@ -141,7 +175,9 @@ export default function RepoModuleMap({ repoId }: { repoId: number }) {
           )}
           <div className="divide-y divide-zinc-200 border-y border-zinc-200">
             {modules.length === 0 && (
-              <div className="py-4 text-center text-xs text-zinc-400">暂无模块，可手动添加后确认。</div>
+              <div className="py-4 text-center text-xs text-zinc-400">
+                {generating ? "AI 正在分析仓库生成模块地图…" : "暂无模块。可点「AI 生成」自动分析，或手动添加后确认。"}
+              </div>
             )}
             {modules.map((module) => (
               <div key={module.id} className="py-3">
@@ -186,12 +222,30 @@ export default function RepoModuleMap({ repoId }: { repoId: number }) {
               <ModuleForm draft={draft} setDraft={setDraft} onSave={save} onCancel={cancel} busy={busy} showKey />
             </div>
           ) : (
-            <div className="mt-3 flex justify-between gap-3">
-              <button className="btn-secondary !px-2.5 !py-1 text-xs" onClick={startAdd}>
-                添加模块
-              </button>
+            <div className="mt-3 flex flex-wrap justify-between gap-3">
+              <div className="flex flex-wrap gap-3">
+                <button
+                  className="btn-secondary !px-2.5 !py-1 text-xs"
+                  onClick={startAdd}
+                  disabled={generating}
+                >
+                  添加模块
+                </button>
+                <button
+                  className="btn-secondary !px-2.5 !py-1 text-xs"
+                  onClick={regenerate}
+                  disabled={busy || generating}
+                  title="复用已有代码索引，仅重新生成模块地图（不重建索引、不改 agent.md）"
+                >
+                  {generating ? "AI 生成中…" : modules.length > 0 ? "AI 重新生成" : "AI 生成模块地图"}
+                </button>
+              </div>
               {!confirmed && modules.length > 0 && (
-                <button className="btn-primary !px-2.5 !py-1 text-xs" onClick={confirmMap} disabled={busy}>
+                <button
+                  className="btn-primary !px-2.5 !py-1 text-xs"
+                  onClick={confirmMap}
+                  disabled={busy || generating}
+                >
                   {busy ? "确认中…" : "确认整张模块地图"}
                 </button>
               )}

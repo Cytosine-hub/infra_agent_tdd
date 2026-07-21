@@ -8,6 +8,7 @@ import {
   getRepoModule,
   listRepoModules,
   repoModuleMapConfirmed,
+  repoModuleMapStatus,
   updateRepoModule,
 } from "@/lib/db";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
@@ -49,6 +50,7 @@ function payload(repoId: number) {
   return {
     modules: listRepoModules(repoId),
     confirmed: repoModuleMapConfirmed(repoId),
+    mapStatus: repoModuleMapStatus(repoId),
   };
 }
 

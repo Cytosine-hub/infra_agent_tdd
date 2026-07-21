@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import {
+  finishRepoModuleMap,
   getRepoById,
   replaceRepoModuleCandidates,
   repoModuleMapConfirmed,
@@ -244,6 +245,25 @@ export async function runRepoOnboard(repoId: number): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     updateRepoOnboard(repoId, { onboardStatus: "failed", onboardStep: "", onboardError: msg });
+  }
+}
+
+// runner 调用的轻量任务：只重新生成模块地图，不重建索引、不碰 agent.md。
+// 复用上次入驻建好的 workspace 与 codegraph 索引（skipIndex），耗时约几十秒。
+export async function runRepoModuleMapOnly(repoId: number): Promise<void> {
+  const repo = getRepoById(repoId);
+  if (!repo) return;
+  try {
+    const base = await getDefaultBranch(repo.fullName);
+    const { dir: mirror, indexed } = await prepareRepoWorkspace(repo.fullName, { base, skipIndex: true });
+    const agentMdPath = path.join(mirror, "agent.md");
+    const agentMdContext = fs.existsSync(agentMdPath) ? fs.readFileSync(agentMdPath, "utf-8").trim() : "";
+    const modules = await generateRepoModuleMap(mirror, indexed, agentMdContext);
+    replaceRepoModuleCandidates(repoId, modules);
+  } catch (err) {
+    console.error("重新生成模块地图失败:", err);
+  } finally {
+    finishRepoModuleMap(repoId);
   }
 }
 

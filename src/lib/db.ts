@@ -72,7 +72,8 @@ export function db(): DatabaseSync {
       indexed_at TEXT,
       token TEXT NOT NULL DEFAULT '',
       host TEXT NOT NULL DEFAULT 'github.com',
-      provider TEXT NOT NULL DEFAULT 'github'
+      provider TEXT NOT NULL DEFAULT 'github',
+      module_map_status TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS agent_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -234,6 +235,10 @@ function migrate(d: DatabaseSync) {
     d.exec("ALTER TABLE repos ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'");
     // 回填：非 github.com 主机视为自建 GitLab
     d.exec("UPDATE repos SET provider = 'gitlab' WHERE host NOT LIKE '%github.com%'");
+  }
+  // 仓库级"只重新生成模块地图"轻量任务信号：'' 空闲 / queued 待跑 / running 进行中
+  if (pcols.length > 0 && !pcols.some((c) => c.name === "module_map_status")) {
+    d.exec("ALTER TABLE repos ADD COLUMN module_map_status TEXT NOT NULL DEFAULT ''");
   }
 }
 
@@ -775,6 +780,40 @@ export function claimNextPendingRepo(): Repo | null {
   if (!r) return null;
   db().prepare("UPDATE repos SET onboard_status = 'indexing', onboard_step = 'queued' WHERE id = ?").run(r.id);
   return getRepoById(r.id);
+}
+
+// 轻量"只重新生成模块地图"任务：请求入队 / 查状态 / 认领 / 收尾 / 启动恢复。
+// 与完整入驻（claimNextPendingRepo）平行，复用已有 workspace+索引，不重建索引、不碰 agent.md。
+export function requestRepoModuleMap(repoId: number): void {
+  db().prepare("UPDATE repos SET module_map_status = 'queued' WHERE id = ?").run(repoId);
+}
+
+export function repoModuleMapStatus(repoId: number): string {
+  const r = db().prepare("SELECT module_map_status FROM repos WHERE id = ?").get(repoId) as
+    | { module_map_status?: string }
+    | undefined;
+  return r?.module_map_status ?? "";
+}
+
+export function claimNextModuleMapRepo(): Repo | null {
+  const r = db()
+    .prepare("SELECT * FROM repos WHERE module_map_status = 'queued' ORDER BY id ASC LIMIT 1")
+    .get() as any;
+  if (!r) return null;
+  db().prepare("UPDATE repos SET module_map_status = 'running' WHERE id = ?").run(r.id);
+  return getRepoById(r.id);
+}
+
+export function finishRepoModuleMap(repoId: number): void {
+  db().prepare("UPDATE repos SET module_map_status = '' WHERE id = ?").run(repoId);
+}
+
+// runner 重启时把中断的 running 重新入队，避免卡死
+export function resetStuckModuleMap(): number {
+  const r = db()
+    .prepare("UPDATE repos SET module_map_status = 'queued' WHERE module_map_status = 'running'")
+    .run();
+  return Number(r.changes ?? 0);
 }
 
 // 标记 pending 状态供 runner 认领（手动重新入驻用）

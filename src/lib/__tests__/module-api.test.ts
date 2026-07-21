@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   getRepoModule: vi.fn(),
   listRepoModules: vi.fn(),
   repoModuleMapConfirmed: vi.fn(),
+  repoModuleMapStatus: vi.fn(),
+  requestRepoModuleMap: vi.fn(),
   updateRepoModule: vi.fn(),
   addEvent: vi.fn(),
   getRepoByName: vi.fn(),
@@ -30,6 +32,8 @@ vi.mock("@/lib/db", () => ({
   getRepoModule: mocks.getRepoModule,
   listRepoModules: mocks.listRepoModules,
   repoModuleMapConfirmed: mocks.repoModuleMapConfirmed,
+  repoModuleMapStatus: mocks.repoModuleMapStatus,
+  requestRepoModuleMap: mocks.requestRepoModuleMap,
   updateRepoModule: mocks.updateRepoModule,
   addEvent: mocks.addEvent,
   getRepoByName: mocks.getRepoByName,
@@ -42,6 +46,7 @@ import {
   PATCH as editModules,
   POST as addModule,
 } from "@/app/api/repos/[id]/modules/route";
+import { POST as generateModules } from "@/app/api/repos/[id]/modules/generate/route";
 import { PATCH as lockScope } from "@/app/api/requirements/[id]/scope/route";
 
 const auth = { provider: "local" as const, providerLogin: "" };
@@ -78,6 +83,7 @@ beforeEach(() => {
   mocks.getRepoByName.mockReturnValue({ id: 1 });
   mocks.listRepoModules.mockReturnValue([repoModule]);
   mocks.repoModuleMapConfirmed.mockReturnValue(true);
+  mocks.repoModuleMapStatus.mockReturnValue("");
   mocks.getRequirement.mockReturnValue(requirement);
 });
 
@@ -151,6 +157,44 @@ describe("模块地图 API", () => {
     );
     expect(response.status).toBe(400);
     expect(mocks.confirmRepoModules).not.toHaveBeenCalled();
+  });
+});
+
+describe("AI 重新生成模块地图 API", () => {
+  const genContext = { params: Promise.resolve({ id: "1" }) };
+  const post = () =>
+    generateModules(new NextRequest("http://localhost/api/repos/1/modules/generate", { method: "POST" }), genContext);
+
+  it("组员无权发起", async () => {
+    mocks.requireUser.mockResolvedValue(member);
+    mocks.getRepoById.mockReturnValue({ id: 1, onboardStatus: "ready" });
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(mocks.requestRepoModuleMap).not.toHaveBeenCalled();
+  });
+
+  it("未完成入驻的仓库不能生成", async () => {
+    mocks.requireUser.mockResolvedValue(lead);
+    mocks.getRepoById.mockReturnValue({ id: 1, onboardStatus: "indexing" });
+    const res = await post();
+    expect(res.status).toBe(400);
+    expect(mocks.requestRepoModuleMap).not.toHaveBeenCalled();
+  });
+
+  it("组长可入队；已在进行中则幂等不重复入队", async () => {
+    mocks.requireUser.mockResolvedValue(lead);
+    mocks.getRepoById.mockReturnValue({ id: 1, onboardStatus: "ready" });
+    mocks.repoModuleMapStatus.mockReturnValue("");
+    const ok = await post();
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ status: "queued" });
+    expect(mocks.requestRepoModuleMap).toHaveBeenCalledWith(1);
+
+    mocks.requestRepoModuleMap.mockClear();
+    mocks.repoModuleMapStatus.mockReturnValue("running");
+    const again = await post();
+    expect(await again.json()).toEqual({ status: "running" });
+    expect(mocks.requestRepoModuleMap).not.toHaveBeenCalled();
   });
 });
 

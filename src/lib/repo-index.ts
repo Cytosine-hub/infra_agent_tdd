@@ -65,6 +65,7 @@ export interface PrepareOpts {
   branch?: string; // 目标功能分支
   base?: string; // 默认分支（新开发时功能分支从它切出）
   useExistingBranch?: boolean; // true=复用远程既有分支（修复/审查），false=从 base 新建
+  skipIndex?: boolean; // 复用已有 codegraph 索引、不重建（轻量场景，如只重生成模块地图）
 }
 
 // 准备共享工作区：确保已 clone（全量，含所有分支）→ 清理上一个任务残留 → 切到目标分支 → 增量建索引。
@@ -99,6 +100,11 @@ export async function prepareRepoWorkspace(
   }
 
   let indexed = false;
+  if (opts.skipIndex) {
+    // 轻量：复用上次入驻建好的索引（存在即可用），不重建
+    indexed = fs.existsSync(path.join(dir, ".codegraph"));
+    return { dir, indexed };
+  }
   if (await codegraphAvailable()) {
     try {
       if (fs.existsSync(path.join(dir, ".codegraph"))) {
