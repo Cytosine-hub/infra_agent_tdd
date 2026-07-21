@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
-import { getRepoById, updateRepoOnboard } from "./db";
+import {
+  getRepoById,
+  replaceRepoModuleCandidates,
+  repoModuleMapConfirmed,
+  updateRepoOnboard,
+} from "./db";
 import { ENGINES } from "./agent-runner";
+import { parseRepoModuleCandidates, type RepoModuleCandidate } from "./module-map";
 import { prepareRepoWorkspace, repoWorkspaceDir } from "./repo-index";
 import { getDefaultBranch, openDocsPr, providerConfigured } from "./repo-provider";
 
@@ -49,38 +55,36 @@ function buildOnboardPrompt(hasExisting: boolean, indexed: boolean): string {
     .join("\n");
 }
 
-// 在镜像目录用本地 CLI 生成 agent.md 内容
-async function generateAgentMd(
-  mirror: string,
-  hasExisting: boolean,
-  indexed: boolean
-): Promise<string> {
+async function runOnboardPrompt(mirror: string, prompt: string, outputName: string): Promise<string> {
   const engine = ENGINES[ONBOARD_ENGINE];
   if (!engine) throw new Error(`未知入驻引擎：${ONBOARD_ENGINE}`);
-  const prompt = buildOnboardPrompt(hasExisting, indexed);
   const timeout = 20 * 60_000;
 
   if (ONBOARD_ENGINE === "codex") {
-    const outFile = path.join(mirror, ".agent-md-draft");
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(engine.cmd, ["exec", "--full-auto", "--output-last-message", outFile, prompt], {
-        cwd: mirror,
-        stdio: ["ignore", "ignore", "pipe"],
+    const outFile = path.join(mirror, outputName);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(engine.cmd, ["exec", "--full-auto", "--output-last-message", outFile, prompt], {
+          cwd: mirror,
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        const t = setTimeout(() => (child.kill("SIGKILL"), reject(new Error("生成超时"))), timeout);
+        child.on("error", (e) => (clearTimeout(t), reject(e)));
+        child.on("exit", (c) =>
+          c === 0
+            ? (clearTimeout(t), resolve())
+            : (clearTimeout(t), reject(new Error(`codex 退出码 ${c}`)))
+        );
       });
-      const t = setTimeout(() => (child.kill("SIGKILL"), reject(new Error("生成超时"))), timeout);
-      child.on("error", (e) => (clearTimeout(t), reject(e)));
-      child.on("exit", (c) =>
-        c === 0 ? (clearTimeout(t), resolve()) : (clearTimeout(t), reject(new Error(`codex 退出码 ${c}`)))
-      );
-    });
-    const out = fs.readFileSync(outFile, "utf-8");
-    fs.rmSync(outFile, { force: true });
-    return cleanAgentMd(out);
+      return fs.readFileSync(outFile, "utf-8");
+    } finally {
+      fs.rmSync(outFile, { force: true });
+    }
   }
 
   // claude -p：stdout 即结果
   const out = await new Promise<string>((resolve, reject) => {
-    const child = spawn("claude", ["-p", prompt, "--dangerously-skip-permissions"], {
+    const child = spawn(engine.cmd, ["-p", prompt, "--dangerously-skip-permissions"], {
       cwd: mirror,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -96,7 +100,57 @@ async function generateAgentMd(
         : (clearTimeout(t), reject(new Error(`claude 退出码 ${c}: ${stderr.slice(-200)}`)))
     );
   });
+  return out;
+}
+
+// 在镜像目录用本地 CLI 生成 agent.md 内容
+async function generateAgentMd(
+  mirror: string,
+  hasExisting: boolean,
+  indexed: boolean
+): Promise<string> {
+  const out = await runOnboardPrompt(
+    mirror,
+    buildOnboardPrompt(hasExisting, indexed),
+    ".agent-md-draft"
+  );
   return cleanAgentMd(out);
+}
+
+function buildModuleMapPrompt(indexed: boolean, agentMd: string): string {
+  return [
+    "你是研发效能平台的仓库架构分析器。请分析当前仓库，给出供需求归属判断使用的模块地图候选。",
+    indexed
+      ? "本仓库已有 codegraph 索引。先使用 codegraph files/explore/node 理解目录、入口和调用关系。"
+      : "请直接阅读目录结构、构建配置和主要入口理解仓库。",
+    "同时阅读根目录 agent.md、CLAUDE.md、AGENTS.md（存在时），不要只按目录名猜测。",
+    "",
+    "模块粒度必须贴合真实结构：优先按独立服务、前端业务模块、包或清晰职责目录划分。",
+    "平台基础设施、共享组件或公共代码要单列为一个名为“公共”的模块，避免悄悄混入业务模块。",
+    "paths 必须是仓库相对路径 glob（例如 apps/admin/**、packages/shared/**），禁止绝对路径和 ../。",
+    "模块之间尽量不重叠；每个真实开发区域都应被覆盖，不要生成虚构目录。module_key 使用简短稳定的 ASCII kebab-case。",
+    "",
+    "只输出 JSON 数组，不要解释或代码围栏。每项字段严格为：",
+    '{"module_key":"admin-web","name":"管理端前端","paths":["apps/admin/**"],"description":"职责与边界"}',
+    agentMd
+      ? `\n以下是本次入驻分析得到的 agent.md 内容，可辅助判断（仍须以真实代码为准）：\n${agentMd.slice(0, 20_000)}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function generateRepoModuleMap(
+  mirror: string,
+  indexed: boolean,
+  agentMd: string
+): Promise<RepoModuleCandidate[]> {
+  const out = await runOnboardPrompt(
+    mirror,
+    buildModuleMapPrompt(indexed, agentMd),
+    ".module-map-draft"
+  );
+  return parseRepoModuleCandidates(out);
 }
 
 // 截到正文；仅当【整体】被一层 ``` 包裹时才剥离（避免误伤正文里的代码块）
@@ -148,20 +202,36 @@ export async function runRepoOnboard(repoId: number): Promise<void> {
 
     // 2. agent.md：分析生成/补齐 → 开 PR/MR（best-effort，不阻塞就绪；GitHub/GitLab 均支持）
     let prUrl = "";
+    const mirror = repoWorkspaceDir(repo.fullName);
+    const existingAgentMd = path.join(mirror, "agent.md");
+    let agentMdContext = fs.existsSync(existingAgentMd)
+      ? fs.readFileSync(existingAgentMd, "utf-8").trim()
+      : "";
     if (providerConfigured(repo.fullName)) {
       try {
         updateRepoOnboard(repoId, { onboardStep: "生成 agent.md" });
-        const mirror = repoWorkspaceDir(repo.fullName);
-        const existingPath = path.join(mirror, "agent.md");
+        const existingPath = existingAgentMd;
         const hasExisting = fs.existsSync(existingPath);
         const existing = hasExisting ? fs.readFileSync(existingPath, "utf-8").trim() : "";
         const content = await generateAgentMd(mirror, hasExisting, indexed);
+        agentMdContext = content;
         // 已有且内容基本一致（已符合要求）→ 不开 PR
         if (!hasExisting || normalize(content) !== normalize(existing)) {
           prUrl = await openAgentMdPr(repo.fullName, content, mirror);
         }
       } catch (err) {
         console.error("agent.md 生成失败（索引已就绪，可手动处理）:", err);
+      }
+    }
+
+    // 3. 模块地图候选：已确认地图不自动覆盖；失败不阻塞仓库就绪。
+    if (!repoModuleMapConfirmed(repoId)) {
+      try {
+        updateRepoOnboard(repoId, { onboardStep: "生成模块地图" });
+        const modules = await generateRepoModuleMap(mirror, indexed, agentMdContext);
+        replaceRepoModuleCandidates(repoId, modules);
+      } catch (err) {
+        console.error("模块地图生成失败（仓库仍可使用，可在仓库管理中手动维护）:", err);
       }
     }
 

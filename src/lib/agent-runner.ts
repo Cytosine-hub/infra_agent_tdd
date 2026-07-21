@@ -6,19 +6,23 @@ import {
   addEvent,
   createAgentTask,
   getAgentTask,
+  getRepoByName,
   getRequirement,
+  listRepoModules,
   latestAgentTask,
   updateAgentTask,
+  updateRequirementModuleSuggestion,
   updateRequirement,
   type AgentTaskRow,
 } from "./db";
-import type { Requirement, TestCase } from "./types";
+import type { ModuleSuggestion, RepoModule, Requirement, TestCase } from "./types";
 import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from "./testcase-gen";
 import { ensureGuardApproved } from "./guard";
 import { createOrGetPullRequest, getDefaultBranch, postPrComment } from "./repo-provider";
 import { DATA_DIR, prepareRepoWorkspace, repoWorkspaceDir } from "./repo-index";
 import { ensureUploadsDir, mockupPath, uploadsDir } from "./uploads";
 import { listAttachments } from "./db";
+import { normalizeRepoPaths } from "./module-map";
 
 const execFileP = promisify(execFile);
 
@@ -142,8 +146,18 @@ function codegraphHint(indexed: boolean): string {
   ].join("\n");
 }
 
-function buildPrompt(req: Requirement, codegraph = "", fixFeedback = ""): string {
+export function buildPrompt(req: Requirement, codegraph = "", fixFeedback = ""): string {
   const fixMode = !!fixFeedback;
+  const lockedScope =
+    req.scopeLockedAt && req.scopePaths?.length
+      ? [
+          `## 已锁定开发范围`,
+          `本需求归属模块：【${req.moduleKey || "未命名模块"}】。只在以下仓库相对路径内开发：`,
+          ...req.scopePaths.map((scopePath) => `- \`${scopePath}\``),
+          `如确需改动范围外或公共代码，必须先在最终说明中明确列出路径与原因，不得静默扩大范围。`,
+          ``,
+        ].join("\n")
+      : "";
   return [
     fixMode
       ? `你是自动化开发 Agent。当前分支上已有实现，但代码审查提出了修改意见，请针对意见修改现有代码。`
@@ -156,6 +170,7 @@ function buildPrompt(req: Requirement, codegraph = "", fixFeedback = ""): string
     `## 需求描述`,
     req.description,
     ``,
+    lockedScope,
     `## 验收测试用例（必须全部满足）`,
     testCasesToMarkdown(req.testCases ?? []),
     ``,
@@ -179,7 +194,7 @@ function buildPrompt(req: Requirement, codegraph = "", fixFeedback = ""): string
 // 门户重启不再中断任务；runner 重启会把孤儿任务标记失败，可一键重触发。
 function assertNoActiveTask(
   requirementId: number,
-  kind: "develop" | "review" | "testcases" | "mockup"
+  kind: "develop" | "review" | "testcases" | "mockup" | "classify"
 ) {
   const last = latestAgentTask(requirementId, kind);
   if (
@@ -190,7 +205,15 @@ function assertNoActiveTask(
       (last.status === "running" && (last.pid == null || pidAlive(last.pid))))
   ) {
     const label =
-      kind === "develop" ? "开发" : kind === "review" ? "审查" : kind === "mockup" ? "渲染图" : "用例生成";
+      kind === "develop"
+        ? "开发"
+        : kind === "review"
+          ? "审查"
+          : kind === "mockup"
+            ? "渲染图"
+            : kind === "classify"
+              ? "模块识别"
+              : "用例生成";
     throw new Error(`该需求已有排队/进行中的${label}任务（#${last.id}）`);
   }
 }
@@ -243,6 +266,15 @@ export function enqueueMockupTask(
   return createAgentTask(requirementId, mkEngine, "", "", "mockup", 0, extra);
 }
 
+// 需求模块识别：提交/重提后自动触发，与用例生成共用默认引擎约定。
+export function enqueueClassifyTask(requirementId: number, engine?: string): AgentTaskRow {
+  const classifyEngine =
+    engine ?? process.env.AGENT_CLASSIFY_ENGINE ?? process.env.TESTCASE_ENGINE ?? "codex";
+  if (!ENGINES[classifyEngine]) throw new Error(`不支持的模块识别引擎：${classifyEngine}`);
+  assertNoActiveTask(requirementId, "classify");
+  return createAgentTask(requirementId, classifyEngine, "", "", "classify");
+}
+
 // 额度/限流类错误特征（claude 订阅 session limit、网关 429 等）
 export function isQuotaError(message: string): boolean {
   return /session limit|usage limit|rate.?limit|hit your.*limit|quota|429|too many requests/i.test(
@@ -258,6 +290,7 @@ export async function executeTask(taskId: number): Promise<void> {
     if (task.kind === "develop") await runTask(taskId);
     else if (task.kind === "review") await runReviewTask(taskId);
     else if (task.kind === "mockup") await runMockupTask(taskId);
+    else if (task.kind === "classify") await runClassifyTask(taskId);
     else await runTestcaseTask(taskId);
   } catch (err) {
     const message = String(err);
@@ -536,6 +569,127 @@ async function runTestcaseTask(taskId: number) {
       ? `本地模板生成 ${cases.length} 条用例（${task.engine} 生成失败的兜底）`
       : `本地 ${source} 生成 ${cases.length} 条测试用例`
   );
+}
+
+export function buildClassifyPrompt(req: Requirement, modules: RepoModule[]): string {
+  const moduleJson = modules.map((module) => ({
+    moduleKey: module.moduleKey,
+    name: module.name,
+    paths: module.paths,
+    description: module.description,
+  }));
+  return [
+    "你是需求评审阶段的模块范围分析器。根据需求与仓库模块地图，判断主要归属模块和建议开发路径。",
+    "moduleKey 必须严格选自模块地图，不得虚构。scopePaths 必须是仓库相对路径 glob；默认直接使用所选模块 paths，可在证据充分时缩小。",
+    "如需求明显跨模块或需要公共代码，在 rationale 中明确指出需拆分或由组长显式授权额外路径，但仍选择一个主要模块。",
+    "只输出一个 JSON 对象，不要解释或代码围栏：",
+    '{"moduleKey":"模块 key","rationale":"判断依据","confidence":0.85,"scopePaths":["path/**"]}',
+    "",
+    `需求标题：${req.title}`,
+    `需求描述：${req.description}`,
+    req.testScenarios ? `核心场景：${req.testScenarios}` : "",
+    `模块地图：${JSON.stringify(moduleJson)}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function parseModuleSuggestion(raw: string, modules: RepoModule[]): ModuleSuggestion {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("模块识别输出中未找到 JSON 对象");
+  const value = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+  const moduleKey = typeof value.moduleKey === "string" ? value.moduleKey.trim() : "";
+  const selected = modules.find((module) => module.moduleKey === moduleKey);
+  if (!selected) throw new Error(`模块识别返回未知 moduleKey：${moduleKey || "（空）"}`);
+  const rawConfidence = typeof value.confidence === "number" ? value.confidence : 0;
+  const scopePaths = normalizeRepoPaths(value.scopePaths);
+  return {
+    moduleKey,
+    rationale:
+      typeof value.rationale === "string" && value.rationale.trim()
+        ? value.rationale.trim().slice(0, 2000)
+        : "AI 未提供判断理由",
+    confidence: Math.min(1, Math.max(0, rawConfidence)),
+    scopePaths: scopePaths.length > 0 ? scopePaths : selected.paths,
+  };
+}
+
+async function runClassifyEngine(
+  task: AgentTaskRow,
+  prompt: string,
+  cwd: string
+): Promise<string> {
+  const engine = ENGINES[task.engine];
+  if (!engine) throw new Error(`未知模块识别引擎：${task.engine}`);
+  const outFile = path.join(cwd, `classify-${task.id}-${Date.now()}.json`);
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const args =
+        task.engine === "codex"
+          ? ["exec", "--skip-git-repo-check", "--output-last-message", outFile, prompt]
+          : ["-p", prompt];
+      const child = spawn(engine.cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      updateAgentTask(task.id, { pid: child.pid ?? null });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (data) => (stdout += String(data)));
+      child.stderr?.on("data", (data) => (stderr += String(data)));
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("模块识别超时"));
+      }, 3 * 60_000);
+      child.on("error", (error) => (clearTimeout(timer), reject(error)));
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        updateAgentTask(task.id, { pid: null });
+        if (code !== 0) return reject(new Error(`${task.engine} 退出码 ${code}: ${stderr.slice(-300)}`));
+        resolve(task.engine === "codex" ? fs.readFileSync(outFile, "utf-8") : stdout);
+      });
+    });
+  } finally {
+    fs.rmSync(outFile, { force: true });
+  }
+}
+
+// 模块识别失败只让本辅助任务失败，不改变需求状态或其他任务。
+export async function runClassifyTask(taskId: number): Promise<void> {
+  const task = getAgentTask(taskId);
+  if (!task) throw new Error("任务不存在");
+  const req = getRequirement(task.requirementId);
+  if (!req) throw new Error("需求不存在");
+  updateAgentTask(task.id, { status: "running", step: "guard" });
+  addEvent(req.id, "classify_started", "system", `模块识别任务 #${task.id}（${task.engine}）启动`);
+  try {
+    await ensureGuardApproved(req.id);
+    const repo = getRepoByName(req.repo);
+    if (!repo) throw new Error("需求所属仓库不存在");
+    const allModules = listRepoModules(repo.id);
+    const confirmed = allModules.filter((repoModule) => repoModule.confirmed === 1);
+    const modules = confirmed.length > 0 ? confirmed : allModules;
+    if (modules.length === 0) throw new Error("仓库尚无模块地图，等待维护者在仓库管理中补充");
+    updateAgentTask(task.id, { step: "classify" });
+    const tempDir = path.join(DATA_DIR, "tmp");
+    fs.mkdirSync(tempDir, { recursive: true });
+    const raw = await runClassifyEngine(task, buildClassifyPrompt(req, modules), tempDir);
+    const suggestion = parseModuleSuggestion(raw, modules);
+    updateRequirementModuleSuggestion(req.id, suggestion);
+    updateAgentTask(task.id, {
+      status: "succeeded",
+      step: "done",
+      result: `建议模块：${suggestion.moduleKey}（置信度 ${Math.round(suggestion.confidence * 100)}%）`,
+    });
+    addEvent(
+      req.id,
+      "classify_succeeded",
+      "system",
+      `AI 建议归属模块 ${suggestion.moduleKey}，等待组长确认范围`
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    addEvent(req.id, "classify_failed", "system", `模块识别失败（不阻塞评审）：${message}`);
+    throw error;
+  }
 }
 
 // 前端渲染图任务：AI 判定是否前端需求；是则生成单文件 HTML 原型供评审预览

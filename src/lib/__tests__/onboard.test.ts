@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cleanAgentMd } from "../onboard";
+import { parseRepoModuleCandidates } from "../module-map";
 
 describe("cleanAgentMd", () => {
   it("保留正文里的代码块（不被误当整体围栏剥离）", () => {
@@ -37,5 +38,27 @@ describe("cleanAgentMd", () => {
 
   it("末尾补换行", () => {
     expect(cleanAgentMd("# agent.md\nx").endsWith("\n")).toBe(true);
+  });
+});
+
+describe("parseRepoModuleCandidates", () => {
+  it("提取并规范化 AI 模块候选", () => {
+    const modules = parseRepoModuleCandidates(
+      '候选如下：\n[{"module_key":"Admin Web","name":"管理端","paths":["./apps/admin/**","../escape"],"description":"后台页面"}]'
+    );
+    expect(modules).toEqual([
+      {
+        moduleKey: "admin-web",
+        name: "管理端",
+        paths: ["apps/admin/**"],
+        description: "后台页面",
+      },
+    ]);
+  });
+
+  it("拒绝没有有效相对路径的候选", () => {
+    expect(() =>
+      parseRepoModuleCandidates('[{"module_key":"bad","name":"坏模块","paths":["/tmp/**"]}]')
+    ).toThrow("没有有效候选");
   });
 });

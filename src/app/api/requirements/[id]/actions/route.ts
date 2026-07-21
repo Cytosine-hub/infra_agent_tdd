@@ -18,7 +18,7 @@ import {
   enqueueTestcaseTask,
   ENGINES,
 } from "@/lib/agent-runner";
-import { STATUS_LABELS, type TestCase } from "@/lib/types";
+import { STATUS_LABELS } from "@/lib/types";
 
 const BodySchema = z.object({
   action: z.enum([

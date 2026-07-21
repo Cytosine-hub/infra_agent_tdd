@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Repo } from "@/lib/types";
+import RepoModuleMap from "@/components/RepoModuleMap";
 
 function OnboardBadge({ repo }: { repo: Repo }) {
   const map: Record<string, { label: string; cls: string }> = {
@@ -192,7 +193,8 @@ export default function RepoManager() {
           </div>
         )}
         {repos.map((r) => (
-          <div key={r.id} className="flex items-center justify-between px-5 py-3.5">
+          <div key={r.id}>
+          <div className="flex items-center justify-between px-5 py-3.5">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
                 {r.fullName}
@@ -257,6 +259,8 @@ export default function RepoManager() {
                 移除
               </button>
             </div>
+          </div>
+          <RepoModuleMap repoId={r.id} />
           </div>
         ))}
       </div>

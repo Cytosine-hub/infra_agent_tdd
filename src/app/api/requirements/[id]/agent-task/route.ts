@@ -71,6 +71,7 @@ export const GET = apiHandler(
     const review = latestAgentTask(id, "review");
     const testcases = latestAgentTask(id, "testcases");
     const mockup = latestAgentTask(id, "mockup");
+    const classify = latestAgentTask(id, "classify");
     const log = task ? readLogTail(task.logPath) : "";
     const reviewLog = review ? readLogTail(review.logPath, 3000) : "";
     return NextResponse.json({
@@ -83,6 +84,7 @@ export const GET = apiHandler(
       reviewProgress: lastProgress(reviewLog),
       testcases: decorate(testcases, online),
       mockup: decorate(mockup, online),
+      classify: decorate(classify, online),
     });
   }
 );

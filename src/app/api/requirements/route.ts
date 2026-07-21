@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createRequirement, getRepoByName, listRequirements } from "@/lib/db";
 import { canUseRepo } from "@/lib/repo-access";
-import { enqueueMockupTask } from "@/lib/agent-runner";
+import { enqueueClassifyTask, enqueueMockupTask } from "@/lib/agent-runner";
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest } from "@/lib/api";
 
@@ -41,6 +41,11 @@ export const POST = apiHandler(async (req: NextRequest) => {
     enqueueMockupTask(requirement.id);
   } catch (e) {
     console.error("渲染图任务入队失败:", e);
+  }
+  try {
+    enqueueClassifyTask(requirement.id);
+  } catch (e) {
+    console.error("模块识别任务入队失败:", e);
   }
   return NextResponse.json({ requirement }, { status: 201 });
 });

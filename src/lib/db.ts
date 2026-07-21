@@ -1,7 +1,15 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import fs from "node:fs";
-import type { Repo, Requirement, RequirementEvent, TestCase, User } from "./types";
+import type {
+  ModuleSuggestion,
+  Repo,
+  RepoModule,
+  Requirement,
+  RequirementEvent,
+  TestCase,
+  User,
+} from "./types";
 import { DEFAULT_PASSWORD, hashPassword, verifyPassword } from "./password";
 
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
@@ -40,6 +48,11 @@ export function db(): DatabaseSync {
       pr_number INTEGER,
       pr_url TEXT,
       reject_reason TEXT,
+      module_key TEXT NOT NULL DEFAULT '',
+      scope_paths TEXT NOT NULL DEFAULT '',
+      module_suggestion TEXT NOT NULL DEFAULT '',
+      scope_locked_by TEXT NOT NULL DEFAULT '',
+      scope_locked_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
@@ -79,6 +92,17 @@ export function db(): DatabaseSync {
       workspace TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
       finished_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS repo_modules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repo_id INTEGER NOT NULL,
+      module_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      paths TEXT NOT NULL DEFAULT '[]',
+      description TEXT NOT NULL DEFAULT '',
+      confirmed INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(repo_id, module_key)
     );
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,6 +186,34 @@ function migrate(d: DatabaseSync) {
     d.exec("ALTER TABLE requirements ADD COLUMN review_feedback TEXT NOT NULL DEFAULT ''");
     d.exec("ALTER TABLE requirements ADD COLUMN fix_rounds INTEGER NOT NULL DEFAULT 0");
   }
+  if (!rcols.some((c) => c.name === "module_key")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN module_key TEXT NOT NULL DEFAULT ''");
+  }
+  if (!rcols.some((c) => c.name === "scope_paths")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN scope_paths TEXT NOT NULL DEFAULT ''");
+  }
+  if (!rcols.some((c) => c.name === "module_suggestion")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN module_suggestion TEXT NOT NULL DEFAULT ''");
+  }
+  if (!rcols.some((c) => c.name === "scope_locked_by")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN scope_locked_by TEXT NOT NULL DEFAULT ''");
+  }
+  if (!rcols.some((c) => c.name === "scope_locked_at")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN scope_locked_at TEXT");
+  }
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS repo_modules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repo_id INTEGER NOT NULL,
+      module_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      paths TEXT NOT NULL DEFAULT '[]',
+      description TEXT NOT NULL DEFAULT '',
+      confirmed INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(repo_id, module_key)
+    )
+  `);
   const pcols = d.prepare("PRAGMA table_info(repos)").all() as { name: string }[];
   if (pcols.length > 0 && !pcols.some((c) => c.name === "team")) {
     d.exec("ALTER TABLE repos ADD COLUMN team TEXT NOT NULL DEFAULT ''");
@@ -239,9 +291,40 @@ function rowToRequirement(r: any): Requirement {
     reviewVerdict: r.review_verdict ?? "",
     reviewFeedback: r.review_feedback ?? "",
     fixRounds: r.fix_rounds ?? 0,
+    moduleKey: r.module_key ?? "",
+    scopePaths: parseStringArray(r.scope_paths),
+    moduleSuggestion: parseModuleSuggestion(r.module_suggestion),
+    scopeLockedBy: r.scope_locked_by ?? "",
+    scopeLockedAt: r.scope_locked_at ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+function parseStringArray(raw: unknown): string[] {
+  if (!raw) return [];
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseModuleSuggestion(raw: unknown): ModuleSuggestion | null {
+  if (!raw) return null;
+  try {
+    const value = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<ModuleSuggestion>;
+    if (!value || typeof value.moduleKey !== "string") return null;
+    return {
+      moduleKey: value.moduleKey,
+      rationale: typeof value.rationale === "string" ? value.rationale : "",
+      confidence: typeof value.confidence === "number" ? value.confidence : 0,
+      scopePaths: parseStringArray(value.scopePaths),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function listRequirements(): Requirement[] {
@@ -306,6 +389,11 @@ export function updateRequirement(id: number, patch: Record<string, unknown>) {
     reviewVerdict: "review_verdict",
     reviewFeedback: "review_feedback",
     fixRounds: "fix_rounds",
+    moduleKey: "module_key",
+    scopePaths: "scope_paths",
+    moduleSuggestion: "module_suggestion",
+    scopeLockedBy: "scope_locked_by",
+    scopeLockedAt: "scope_locked_at",
   };
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -313,7 +401,8 @@ export function updateRequirement(id: number, patch: Record<string, unknown>) {
     const col = colMap[k];
     if (!col) continue;
     sets.push(`${col} = ?`);
-    vals.push((k === "testCases" || k === "execPlan") && v !== null ? JSON.stringify(v) : v);
+    const jsonField = k === "testCases" || k === "execPlan" || k === "scopePaths" || k === "moduleSuggestion";
+    vals.push(jsonField && v !== null && v !== "" ? JSON.stringify(v) : v);
   }
   if (!sets.length) return;
   sets.push("updated_at = datetime('now', 'localtime')");
@@ -474,6 +563,180 @@ export function getRepoById(id: number): Repo | null {
   return r ? rowToRepo(r) : null;
 }
 
+function rowToRepoModule(r: any): RepoModule {
+  return {
+    id: r.id,
+    repoId: r.repo_id,
+    moduleKey: r.module_key,
+    name: r.name,
+    paths: parseStringArray(r.paths),
+    description: r.description ?? "",
+    confirmed: r.confirmed ? 1 : 0,
+    sortOrder: r.sort_order ?? 0,
+  };
+}
+
+export function listRepoModules(repoId: number, confirmedOnly = false): RepoModule[] {
+  const rows = db()
+    .prepare(
+      `SELECT * FROM repo_modules WHERE repo_id = ?${confirmedOnly ? " AND confirmed = 1" : ""}
+       ORDER BY sort_order ASC, id ASC`
+    )
+    .all(repoId) as any[];
+  return rows.map(rowToRepoModule);
+}
+
+export function getRepoModule(id: number): RepoModule | null {
+  const row = db().prepare("SELECT * FROM repo_modules WHERE id = ?").get(id) as any;
+  return row ? rowToRepoModule(row) : null;
+}
+
+export function repoModuleMapConfirmed(repoId: number): boolean {
+  const row = db()
+    .prepare(
+      "SELECT COUNT(*) AS total, SUM(CASE WHEN confirmed = 1 THEN 1 ELSE 0 END) AS confirmed FROM repo_modules WHERE repo_id = ?"
+    )
+    .get(repoId) as { total: number; confirmed: number | null };
+  return row.total > 0 && row.confirmed === row.total;
+}
+
+function invalidateRepoModuleMap(repoId: number) {
+  db().prepare("UPDATE repo_modules SET confirmed = 0 WHERE repo_id = ?").run(repoId);
+}
+
+export function addRepoModule(input: {
+  repoId: number;
+  moduleKey: string;
+  name: string;
+  paths: string[];
+  description?: string;
+  sortOrder?: number;
+}): RepoModule {
+  const sortOrder =
+    input.sortOrder ??
+    ((db()
+      .prepare("SELECT COALESCE(MAX(sort_order), -10) + 10 AS value FROM repo_modules WHERE repo_id = ?")
+      .get(input.repoId) as { value: number }).value ?? 0);
+  const result = db()
+    .prepare(
+      `INSERT INTO repo_modules (repo_id, module_key, name, paths, description, confirmed, sort_order)
+       VALUES (?, ?, ?, ?, ?, 0, ?)`
+    )
+    .run(
+      input.repoId,
+      input.moduleKey,
+      input.name,
+      JSON.stringify(input.paths),
+      input.description ?? "",
+      sortOrder
+    );
+  invalidateRepoModuleMap(input.repoId);
+  return getRepoModule(Number(result.lastInsertRowid))!;
+}
+
+export function updateRepoModule(
+  id: number,
+  patch: Partial<Pick<RepoModule, "name" | "paths" | "description" | "sortOrder">>
+): RepoModule | null {
+  const current = getRepoModule(id);
+  if (!current) return null;
+  const colMap: Record<string, string> = {
+    name: "name",
+    paths: "paths",
+    description: "description",
+    sortOrder: "sort_order",
+  };
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [key, value] of Object.entries(patch)) {
+    if (!colMap[key]) continue;
+    sets.push(`${colMap[key]} = ?`);
+    values.push(key === "paths" ? JSON.stringify(value) : value);
+  }
+  if (sets.length > 0) {
+    db()
+      .prepare(`UPDATE repo_modules SET ${sets.join(", ")} WHERE id = ?`)
+      .run(...(values as never[]), id);
+    invalidateRepoModuleMap(current.repoId);
+  }
+  return getRepoModule(id);
+}
+
+export function deleteRepoModule(id: number): boolean {
+  const current = getRepoModule(id);
+  if (!current) return false;
+  db().prepare("DELETE FROM repo_modules WHERE id = ?").run(id);
+  invalidateRepoModuleMap(current.repoId);
+  return true;
+}
+
+export function confirmRepoModules(repoId: number): number {
+  const result = db().prepare("UPDATE repo_modules SET confirmed = 1 WHERE repo_id = ?").run(repoId);
+  return Number(result.changes ?? 0);
+}
+
+export function replaceRepoModuleCandidates(
+  repoId: number,
+  modules: Array<Pick<RepoModule, "moduleKey" | "name" | "paths" | "description">>
+): void {
+  const database = db();
+  database.exec("BEGIN");
+  try {
+    database.prepare("DELETE FROM repo_modules WHERE repo_id = ?").run(repoId);
+    const insert = database.prepare(
+      `INSERT INTO repo_modules (repo_id, module_key, name, paths, description, confirmed, sort_order)
+       VALUES (?, ?, ?, ?, ?, 0, ?)`
+    );
+    modules.forEach((module, index) =>
+      insert.run(
+        repoId,
+        module.moduleKey,
+        module.name,
+        JSON.stringify(module.paths),
+        module.description,
+        index * 10
+      )
+    );
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function updateRequirementModuleSuggestion(
+  requirementId: number,
+  suggestion: ModuleSuggestion | null
+): void {
+  updateRequirement(requirementId, { moduleSuggestion: suggestion ?? "" });
+}
+
+export function lockRequirementScope(
+  requirementId: number,
+  moduleKeys: string[],
+  scopePaths: string[],
+  lockedBy: string
+): void {
+  db()
+    .prepare(
+      `UPDATE requirements
+       SET module_key = ?, scope_paths = ?, scope_locked_by = ?,
+           scope_locked_at = datetime('now', 'localtime'), updated_at = datetime('now', 'localtime')
+       WHERE id = ?`
+    )
+    .run(moduleKeys.join(","), JSON.stringify(scopePaths), lockedBy, requirementId);
+}
+
+export function clearRequirementModuleScope(requirementId: number): void {
+  updateRequirement(requirementId, {
+    moduleKey: "",
+    scopePaths: [],
+    moduleSuggestion: "",
+    scopeLockedBy: "",
+    scopeLockedAt: null,
+  });
+}
+
 export function updateRepoOnboard(
   id: number,
   patch: Partial<{
@@ -524,6 +787,7 @@ export function requeueRepoOnboard(id: number) {
 }
 
 export function deleteRepo(id: number) {
+  db().prepare("DELETE FROM repo_modules WHERE repo_id = ?").run(id);
   db().prepare("DELETE FROM repos WHERE id = ?").run(id);
 }
 
@@ -541,7 +805,7 @@ function rowToUser(r: any): User {
 
 /* ---------- 本地 Agent 任务 ---------- */
 
-export type AgentTaskKind = "develop" | "review" | "testcases" | "mockup";
+export type AgentTaskKind = "develop" | "review" | "testcases" | "mockup" | "classify";
 
 export interface AgentTaskRow {
   id: number;

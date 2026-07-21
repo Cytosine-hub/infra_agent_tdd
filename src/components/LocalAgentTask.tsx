@@ -23,6 +23,7 @@ const STEP_LABELS: Record<string, string> = {
   review: "审查中",
   generate: "生成用例",
   mockup: "生成渲染图",
+  classify: "识别模块",
   done: "完成",
 };
 

@@ -2,8 +2,19 @@ import { describe, expect, it } from "vitest";
 import { canUseRepo, selectableRepos } from "../repo-access";
 import type { Repo, User } from "../types";
 
-const publicRepo: Repo = { id: 1, fullName: "org/public", description: "", team: "" };
-const dbRepo: Repo = { id: 2, fullName: "org/db-tools", description: "", team: "数据库组" };
+const repoDefaults: Omit<Repo, "id" | "fullName" | "team"> = {
+  description: "",
+  onboardStatus: "ready",
+  onboardStep: "",
+  onboardError: "",
+  onboardPr: "",
+  indexedAt: null,
+  hasToken: false,
+  host: "github.com",
+  provider: "github",
+};
+const publicRepo: Repo = { ...repoDefaults, id: 1, fullName: "org/public", team: "" };
+const dbRepo: Repo = { ...repoDefaults, id: 2, fullName: "org/db-tools", team: "数据库组" };
 
 const dbMember: User = {
   id: 1, username: "db_member", displayName: "", role: "member", team: "数据库组",

@@ -12,6 +12,7 @@ interface TaskRow extends AgentTaskRow {
 
 const KIND_LABELS: Record<string, string> = {
   testcases: "📝 用例生成",
+  classify: "🧭 模块识别",
   develop: "🛠 开发",
   review: "🧐 PR 审查",
   mockup: "🎨 渲染图",
@@ -31,6 +32,7 @@ const STEP_LABELS: Record<string, string> = {
   index: "建代码索引",
   generate: "生成用例",
   mockup: "生成渲染图",
+  classify: "模块识别",
   develop: "编码中",
   fix: "按审查修复",
   verify: "测试校验",

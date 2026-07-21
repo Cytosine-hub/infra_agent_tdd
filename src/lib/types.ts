@@ -85,6 +85,24 @@ export interface Repo {
   provider: "github" | "gitlab"; // 托管类型，决定用哪套 API 适配层
 }
 
+export interface RepoModule {
+  id: number;
+  repoId: number;
+  moduleKey: string;
+  name: string;
+  paths: string[]; // 仓库相对路径 glob
+  description: string;
+  confirmed: 0 | 1;
+  sortOrder: number;
+}
+
+export interface ModuleSuggestion {
+  moduleKey: string;
+  rationale: string;
+  confidence: number;
+  scopePaths: string[];
+}
+
 // 启动开发前的执行方案（AI 评估 + 人工可改）
 export interface ExecPlan {
   engine: string; // claude | codex
@@ -121,6 +139,12 @@ export interface Requirement {
   reviewVerdict: "" | "approved" | "changes";
   reviewFeedback: string;
   fixRounds: number;
+  // 评审确认的模块 key；多模块时用逗号分隔，范围以 scopePaths 为准。
+  moduleKey: string;
+  scopePaths: string[];
+  moduleSuggestion: ModuleSuggestion | null;
+  scopeLockedBy: string;
+  scopeLockedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -133,4 +157,3 @@ export interface RequirementEvent {
   detail: string;
   createdAt: string;
 }
-

@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { canChangeRole, canDeleteUser, canManageUsers } from "../user-admin";
 import type { User } from "../types";
 
-const admin: User = { id: 1, username: "admin", displayName: "", role: "admin", team: "平台" };
-const admin2: User = { id: 9, username: "admin2", displayName: "", role: "admin", team: "平台" };
-const lead: User = { id: 2, username: "db_lead", displayName: "", role: "lead", team: "数据库组" };
-const member: User = { id: 3, username: "db_member", displayName: "", role: "member", team: "数据库组" };
+const auth = { provider: "local" as const, providerLogin: "" };
+const admin: User = { ...auth, id: 1, username: "admin", displayName: "", role: "admin", team: "平台" };
+const admin2: User = { ...auth, id: 9, username: "admin2", displayName: "", role: "admin", team: "平台" };
+const lead: User = { ...auth, id: 2, username: "db_lead", displayName: "", role: "lead", team: "数据库组" };
+const member: User = { ...auth, id: 3, username: "db_member", displayName: "", role: "member", team: "数据库组" };
 
 describe("canManageUsers", () => {
   it("仅管理员可管理账号", () => {

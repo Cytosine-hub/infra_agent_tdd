@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Requirement, RequirementEvent, TestCase, User } from "@/lib/types";
+import type { RepoModule, Requirement, RequirementEvent, TestCase, User } from "@/lib/types";
 import StatusBadge from "@/components/StatusBadge";
 import AgentRuns from "@/components/AgentRuns";
 import LocalAgentTask from "@/components/LocalAgentTask";
 import ExecPlanCard from "@/components/ExecPlanCard";
 import AttachmentsCard from "@/components/AttachmentsCard";
 import MockupCard from "@/components/MockupCard";
+import RequirementModuleScope from "@/components/RequirementModuleScope";
 import type { AgentTaskRow } from "@/lib/db";
 import type { ExecPlan } from "@/lib/types";
 
@@ -30,10 +31,14 @@ export default function RequirementDetail({
   initialRequirement,
   initialEvents,
   user,
+  repoModules,
+  moduleMapConfirmed,
 }: {
   initialRequirement: Requirement;
   initialEvents: RequirementEvent[];
   user: User;
+  repoModules: RepoModule[];
+  moduleMapConfirmed: boolean;
 }) {
   const [req, setReq] = useState(initialRequirement);
   const [events, setEvents] = useState(initialEvents);
@@ -57,7 +62,13 @@ export default function RequirementDetail({
 
   // 统一任务活跃轮询：所有启动类按钮在对应任务执行中一律禁用（防重复触发）
   const [mockupTask, setMockupTask] = useState<AgentTaskRow | null>(null);
-  const [taskActive, setTaskActive] = useState({ dev: false, review: false, testcases: false, mockup: false });
+  const [taskActive, setTaskActive] = useState({
+    dev: false,
+    review: false,
+    testcases: false,
+    mockup: false,
+    classify: false,
+  });
   const activePrev = useRef("");
   useEffect(() => {
     let stop = false;
@@ -75,6 +86,7 @@ export default function RequirementDetail({
             review: isActive(d.review),
             testcases: isActive(d.testcases),
             mockup: isActive(d.mockup),
+            classify: isActive(d.classify),
           };
           setTaskActive(next);
           setGenActive(next.testcases);
@@ -275,6 +287,19 @@ export default function RequirementDetail({
         <AttachmentsCard
           requirementId={req.id}
           canManage={isRequester || isLead}
+        />
+
+        <RequirementModuleScope
+          key={`${req.scopeLockedAt ?? ""}-${req.moduleSuggestion?.moduleKey ?? ""}-${req.moduleSuggestion?.confidence ?? ""}`}
+          requirement={req}
+          modules={repoModules}
+          mapConfirmed={moduleMapConfirmed}
+          isLead={isLead}
+          classifyActive={taskActive.classify}
+          onSaved={(updated) => {
+            setReq(updated);
+            refresh();
+          }}
         />
 
         {/* 前端渲染图（AI 判定前端需求后生成，供评审预览） */}

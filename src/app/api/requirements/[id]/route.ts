@@ -4,7 +4,7 @@ import { addEvent, getRepoByName, getRequirement, listEvents, updateRequirement 
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { canUseRepo } from "@/lib/repo-access";
-import { enqueueMockupTask } from "@/lib/agent-runner";
+import { enqueueClassifyTask, enqueueMockupTask } from "@/lib/agent-runner";
 
 export const GET = apiHandler(
   async (_req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
@@ -56,6 +56,11 @@ export const PATCH = apiHandler(
       // 内容已变化：安全门审结论重置，下次 AI 任务重新审
       guardStatus: "",
       guardReason: "",
+      moduleKey: "",
+      scopePaths: [],
+      moduleSuggestion: "",
+      scopeLockedBy: "",
+      scopeLockedAt: null,
     });
     addEvent(
       id,
@@ -68,6 +73,11 @@ export const PATCH = apiHandler(
       enqueueMockupTask(id);
     } catch {
       /* 已有进行中的渲染图任务则跳过 */
+    }
+    try {
+      enqueueClassifyTask(id);
+    } catch {
+      /* 已有进行中的识别任务则跳过 */
     }
     return NextResponse.json({ requirement: getRequirement(id) });
   }

@@ -22,16 +22,28 @@ function makeReq(patch: Partial<Requirement> = {}): Requirement {
     prNumber: null,
     prUrl: null,
     rejectReason: null,
+    execPlan: null,
+    guardStatus: "",
+    guardReason: "",
+    reviewVerdict: "",
+    reviewFeedback: "",
+    fixRounds: 0,
+    moduleKey: "",
+    scopePaths: [],
+    moduleSuggestion: null,
+    scopeLockedBy: "",
+    scopeLockedAt: null,
     createdAt: "",
     updatedAt: "",
     ...patch,
   };
 }
 
-const dbLead: User = { id: 1, username: "db_lead", displayName: "", role: "lead", team: "数据库组" };
-const mwLead: User = { id: 2, username: "mw_lead", displayName: "", role: "lead", team: "中间件组" };
-const member: User = { id: 3, username: "db_member", displayName: "", role: "member", team: "数据库组" };
-const admin: User = { id: 4, username: "admin", displayName: "", role: "admin", team: "平台" };
+const auth = { provider: "local" as const, providerLogin: "" };
+const dbLead: User = { ...auth, id: 1, username: "db_lead", displayName: "", role: "lead", team: "数据库组" };
+const mwLead: User = { ...auth, id: 2, username: "mw_lead", displayName: "", role: "lead", team: "中间件组" };
+const member: User = { ...auth, id: 3, username: "db_member", displayName: "", role: "member", team: "数据库组" };
+const admin: User = { ...auth, id: 4, username: "admin", displayName: "", role: "admin", team: "平台" };
 
 describe("canPerform", () => {
   it("本组组长可审核需求", () => {
