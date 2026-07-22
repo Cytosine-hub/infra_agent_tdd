@@ -87,6 +87,8 @@ export async function prepareRepoWorkspace(
   // 清理上一个任务的未提交改动与未跟踪文件（保留 .codegraph / node_modules 等被忽略项，加速下次）
   await git(dir, ["reset", "--hard"]);
   await git(dir, ["clean", "-fd"]);
+  // 把 origin 更新到当前 host/token（仓库改了 Git 服务地址/令牌时，旧工作区 remote 会过时导致 fetch 失败）
+  await git(dir, ["remote", "set-url", "origin", cloneUrl(repoFullName)]);
   // 确保拉取所有分支的远程跟踪 ref（兼容遗留的单分支/浅克隆，否则 origin/<功能分支> 不存在）
   await git(dir, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]);
   await git(dir, ["fetch", "origin", "--prune"]);
