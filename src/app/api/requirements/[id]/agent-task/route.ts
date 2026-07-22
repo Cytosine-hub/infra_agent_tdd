@@ -44,6 +44,20 @@ function lastProgress(log: string): string {
   return "";
 }
 
+// 把整段日志转成人类可读的执行过程（供前端像对话流那样展示 agent 在干什么）
+function humanizeTranscript(log: string): string[] {
+  const out: string[] = [];
+  for (const raw of log.split(/\r?\n/)) {
+    const l = raw.trim();
+    if (!l || /^[-=\s]*$/.test(l)) continue;
+    const h = humanize(l);
+    if (!h || h === "工具结果返回，继续…") continue;
+    if (out.length && out[out.length - 1] === h) continue; // 去连续重复行
+    out.push(h);
+  }
+  return out.slice(-300); // 最多保留最近 300 条，防止载荷过大
+}
+
 function decorate(task: AgentTaskRow | null, online: boolean) {
   if (!task) return null;
   const eff = effectiveTaskStatus(task, online);
@@ -74,14 +88,19 @@ export const GET = apiHandler(
     const classify = latestAgentTask(id, "classify");
     const log = task ? readLogTail(task.logPath) : "";
     const reviewLog = review ? readLogTail(review.logPath, 3000) : "";
+    // 执行过程 transcript 取更大一段日志，转成可读的对话流
+    const devFull = task ? readLogTail(task.logPath, 60000) : "";
+    const reviewFull = review ? readLogTail(review.logPath, 60000) : "";
     return NextResponse.json({
       runnerOnline: online,
       task: decorate(task, online),
       log,
       progress: lastProgress(log),
+      transcript: humanizeTranscript(devFull),
       review: decorate(review, online),
       reviewLog,
       reviewProgress: lastProgress(reviewLog),
+      reviewTranscript: humanizeTranscript(reviewFull),
       testcases: decorate(testcases, online),
       mockup: decorate(mockup, online),
       classify: decorate(classify, online),

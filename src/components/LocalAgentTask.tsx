@@ -77,9 +77,13 @@ export default function LocalAgentTask({
   const [log, setLog] = useState("");
   const [progress, setProgress] = useState("");
   const [reviewProgress, setReviewProgress] = useState("");
+  const [transcript, setTranscript] = useState<string[]>([]);
+  const [reviewTranscript, setReviewTranscript] = useState<string[]>([]);
   const [runnerOnline, setRunnerOnline] = useState(true);
   const [showLog, setShowLog] = useState(false);
+  const [showProcess, setShowProcess] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
+  const procRef = useRef<HTMLDivElement>(null);
   const prevActive = useRef<string>("");
 
   const load = useCallback(() => {
@@ -92,6 +96,8 @@ export default function LocalAgentTask({
         setLog(d.log);
         setProgress(d.progress ?? "");
         setReviewProgress(d.reviewProgress ?? "");
+        setTranscript(d.transcript ?? []);
+        setReviewTranscript(d.reviewTranscript ?? []);
         setRunnerOnline(d.runnerOnline !== false);
         // 任何任务从 排队/运行 变为终态 → 通知父组件刷新需求（用例已写入/状态已流转）
         const active = [d.task, d.review, d.testcases]
@@ -105,13 +111,18 @@ export default function LocalAgentTask({
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 5_000);
+    const timer = setInterval(load, 3_000);
     return () => clearInterval(timer);
   }, [load]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
+
+  // 执行过程面板：新输出到来时自动滚到底（像看聊天流）
+  useEffect(() => {
+    if (showProcess && procRef.current) procRef.current.scrollTop = procRef.current.scrollHeight;
+  }, [transcript, showProcess]);
 
   if (!task && !review && !testcases) return null;
 
@@ -196,10 +207,44 @@ export default function LocalAgentTask({
           创建:{task.createdAt}
           {task.finishedAt && ` · 结束：${task.finishedAt}`}
         </span>
-        <button className="text-sky-600 hover:underline" onClick={() => setShowLog(!showLog)}>
-          {showLog ? "收起日志" : "查看日志"}
-        </button>
+        <div className="flex items-center gap-3">
+          <button className="text-sky-600 hover:underline" onClick={() => setShowProcess(!showProcess)}>
+            {showProcess ? "收起执行过程" : `🗨 执行过程${transcript.length ? `（${transcript.length}）` : ""}`}
+          </button>
+          <button className="text-zinc-400 hover:text-zinc-600 hover:underline" onClick={() => setShowLog(!showLog)}>
+            {showLog ? "收起原始日志" : "原始日志"}
+          </button>
+        </div>
       </div>
+
+      {/* 执行过程：把 agent 的工具调用/思考/结果转成可读的对话流，运行中实时追加 */}
+      {showProcess && (
+        <div
+          ref={procRef}
+          className="mt-3 flex max-h-96 flex-col gap-1 overflow-auto rounded-lg border border-zinc-200 bg-zinc-50 p-2"
+        >
+          {transcript.length === 0 ? (
+            <div className="p-2 text-xs text-zinc-400">
+              {task.status === "running" ? "等待 agent 输出…" : "（暂无执行输出）"}
+            </div>
+          ) : (
+            transcript.map((line, i) => (
+              <div
+                key={i}
+                className="rounded border border-zinc-100 bg-white px-2 py-1 font-mono text-[11px] leading-relaxed text-zinc-700"
+              >
+                {line}
+              </div>
+            ))
+          )}
+          {task.status === "running" && (
+            <div className="px-2 py-1 text-[11px] text-sky-600">
+              <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500 align-middle" />
+              agent 执行中…
+            </div>
+          )}
+        </div>
+      )}
 
       {showLog && (
         <pre
@@ -242,6 +287,23 @@ export default function LocalAgentTask({
             </div>
           </div>
           {review && <LiveProgress task={review} text={reviewProgress} />}
+          {review && reviewTranscript.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-sky-600 hover:underline">
+                🗨 审查执行过程（{reviewTranscript.length}）
+              </summary>
+              <div className="mt-2 flex max-h-72 flex-col gap-1 overflow-auto rounded-lg border border-zinc-200 bg-zinc-50 p-2">
+                {reviewTranscript.map((line, i) => (
+                  <div
+                    key={i}
+                    className="rounded border border-zinc-100 bg-white px-2 py-1 font-mono text-[11px] leading-relaxed text-zinc-700"
+                  >
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
           {review?.status === "failed" && (
             <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
               {review.error ?? "审查失败"}
