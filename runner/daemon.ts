@@ -27,6 +27,18 @@ import {
 } from "../src/lib/db";
 import { executeTask, pidAlive } from "../src/lib/agent-runner";
 import { runRepoModuleMapOnly, runRepoOnboard } from "../src/lib/onboard";
+import { runCleanup } from "../src/lib/cleanup";
+
+// 可再生数据清理：孤儿工作区 + 过期任务日志。启动跑一次，之后每天一次。
+function cleanupOnce() {
+  try {
+    const { orphans, logs } = runCleanup();
+    if (orphans.length || logs > 0)
+      console.log(`[runner] 清理：孤儿工作区 ${orphans.length} 个、过期日志 ${logs} 个`);
+  } catch (e) {
+    console.error("[runner] 清理失败（忽略，下次再试）:", e);
+  }
+}
 
 const POLL_MS = 3000;
 let stopping = false;
@@ -44,7 +56,10 @@ async function main() {
   runnerBeat(Date.now());
   const heartbeat = setInterval(() => runnerBeat(Date.now()), 5000);
 
-  console.log(`[runner] agent runner 已启动，轮询间隔 ${POLL_MS}ms，心跳 5s`);
+  cleanupOnce(); // 启动清理一次
+  const cleanupTimer = setInterval(cleanupOnce, 24 * 60 * 60 * 1000); // 每天一次
+
+  console.log(`[runner] agent runner 已启动，轮询间隔 ${POLL_MS}ms，心跳 5s，每日清理已启用`);
 
   while (!stopping) {
     // 优先处理仓库入驻（新加仓库须先建索引 + agent.md 才能开发）
@@ -82,6 +97,7 @@ async function main() {
     }
   }
   clearInterval(heartbeat);
+  clearInterval(cleanupTimer);
 }
 
 process.on("SIGTERM", () => (stopping = true));

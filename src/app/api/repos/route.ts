@@ -13,6 +13,7 @@ import {
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { selectableRepos } from "@/lib/repo-access";
+import { removeRepoWorkspace } from "@/lib/cleanup";
 
 // ?forUser=1 时只返回当前用户可选用的仓库（公共 + 本组）
 export const GET = apiHandler(async (req: NextRequest) => {
@@ -68,7 +69,9 @@ export const DELETE = apiHandler(async (req: NextRequest) => {
   if (user.role === "member") return forbidden("仅组长或管理员可维护仓库列表");
   const id = Number(new URL(req.url).searchParams.get("id"));
   if (!id) return badRequest("缺少 id");
+  const repo = getRepoById(id);
   deleteRepo(id);
+  if (repo) removeRepoWorkspace(repo.fullName); // 顺带清掉工作区，避免留孤儿
   return NextResponse.json({ ok: true });
 });
 
