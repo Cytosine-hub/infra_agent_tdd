@@ -123,6 +123,15 @@ export default function RequirementDetail({
   const isLead = user.role === "admin" || (user.role === "lead" && user.team === req.team);
   const isRequester = user.username === req.createdBy;
 
+  // 任一 AI 评估/生成任务进行中：整个操作区按钮一律禁用，防止过程中重复触发或状态错乱
+  const aiRunning =
+    evaluating ||
+    taskActive.dev ||
+    taskActive.review ||
+    taskActive.testcases ||
+    taskActive.mockup ||
+    taskActive.classify;
+
   async function act(action: ActionName, extra: Record<string, unknown> = {}) {
     setBusy(action);
     setError("");
@@ -462,12 +471,13 @@ export default function RequirementDetail({
                 <ActionButton
                   label="✅ 需求审核通过"
                   busy={busy === "approve_requirement"}
+                  disabled={aiRunning}
                   onClick={() => act("approve_requirement")}
                 />
                 {req.status === "submitted" && (
                   <button
                     className="btn-danger"
-                    disabled={busy !== null}
+                    disabled={busy !== null || aiRunning}
                     onClick={() => actWithReason("reject_requirement", "请输入驳回原因：")}
                   >
                     ✕ 驳回需求
@@ -482,6 +492,7 @@ export default function RequirementDetail({
                   genActive || busy === "generate_tests" ? "🤖 测试用例生成中…" : "🤖 生成测试用例"
                 }
                 busy={genActive || busy === "generate_tests"}
+                disabled={aiRunning}
                 onClick={() => {
                   const extra = window.prompt("补充要求（可选，直接确定则按需求内容生成）：");
                   if (extra === null) return;
@@ -496,12 +507,13 @@ export default function RequirementDetail({
                   <ActionButton
                     label="✅ 测试用例通过"
                     busy={busy === "approve_tests"}
+                    disabled={aiRunning}
                     onClick={() => act("approve_tests")}
                   />
                 )}
                 <button
                   className="btn-secondary"
-                  disabled={busy !== null || genActive}
+                  disabled={busy !== null || genActive || aiRunning}
                   onClick={() => {
                     const extra = window.prompt("补充要求（可选，如：增加并发场景用例；直接确定则按原需求重新生成）：");
                     if (extra === null) return;
@@ -513,7 +525,7 @@ export default function RequirementDetail({
                 {(isLead || isRequester) && (
                   <button
                     className="btn-danger"
-                    disabled={busy !== null}
+                    disabled={busy !== null || aiRunning}
                     onClick={() => actWithReason("reject_tests", "请输入驳回原因：")}
                   >
                     ✕ 驳回用例
@@ -536,7 +548,7 @@ export default function RequirementDetail({
             {req.status === "in_review" && isLead && req.prNumber && (
               <button
                 className="btn-primary"
-                disabled={busy !== null}
+                disabled={busy !== null || aiRunning}
                 onClick={() => {
                   if (window.confirm(`确认合并 PR #${req.prNumber}？将校验 CI 全绿后 squash 合并并删除分支。`)) {
                     act("merge_pr");
@@ -564,7 +576,7 @@ export default function RequirementDetail({
             {(req.status === "developing" || req.status === "in_review") && (
               <button
                 className="btn-secondary"
-                disabled={busy !== null}
+                disabled={busy !== null || aiRunning}
                 onClick={() => act("sync_github")}
               >
                 {busy === "sync_github" ? "同步中…" : "🔄 同步 GitHub 进度"}
@@ -581,7 +593,7 @@ export default function RequirementDetail({
             {isLead && req.status !== "done" && req.status !== "abandoned" && (
               <button
                 className="mt-2 text-xs text-zinc-400 hover:text-red-600 hover:underline"
-                disabled={busy !== null}
+                disabled={busy !== null || aiRunning}
                 onClick={() =>
                   actWithReason("abandon", "废弃原因（将关闭关联 Issue/PR 并删除分支）：")
                 }
@@ -620,13 +632,15 @@ function ActionButton({
   label,
   busy,
   onClick,
+  disabled = false,
 }: {
   label: string;
   busy: boolean;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <button className="btn-primary" disabled={busy} onClick={onClick}>
+    <button className="btn-primary" disabled={busy || disabled} onClick={onClick}>
       {label}
     </button>
   );
