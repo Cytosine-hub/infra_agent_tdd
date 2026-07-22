@@ -12,10 +12,11 @@ import {
   latestAgentTask,
   updateAgentTask,
   updateRequirementModuleSuggestion,
+  updateRequirementReviewSuggestion,
   updateRequirement,
   type AgentTaskRow,
 } from "./db";
-import type { ModuleSuggestion, RepoModule, Requirement, TestCase } from "./types";
+import type { ModuleSuggestion, RepoModule, Requirement, ReviewSuggestion, TestCase } from "./types";
 import { generateWithEngine, generateWithTemplate, testCasesToMarkdown } from "./testcase-gen";
 import { ensureGuardApproved } from "./guard";
 import { createOrGetPullRequest, getDefaultBranch, postPrComment } from "./repo-provider";
@@ -194,7 +195,7 @@ export function buildPrompt(req: Requirement, codegraph = "", fixFeedback = ""):
 // 门户重启不再中断任务；runner 重启会把孤儿任务标记失败，可一键重触发。
 function assertNoActiveTask(
   requirementId: number,
-  kind: "develop" | "review" | "testcases" | "mockup" | "classify"
+  kind: "develop" | "review" | "testcases" | "mockup" | "classify" | "suggest"
 ) {
   const last = latestAgentTask(requirementId, kind);
   if (
@@ -213,7 +214,9 @@ function assertNoActiveTask(
             ? "渲染图"
             : kind === "classify"
               ? "模块识别"
-              : "用例生成";
+              : kind === "suggest"
+                ? "评审建议"
+                : "用例生成";
     throw new Error(`该需求已有排队/进行中的${label}任务（#${last.id}）`);
   }
 }
@@ -275,6 +278,15 @@ export function enqueueClassifyTask(requirementId: number, engine?: string): Age
   return createAgentTask(requirementId, classifyEngine, "", "", "classify");
 }
 
+// 需求评审建议：提交/重提后自动触发；组长改需求后可「重新评估」再触发。
+export function enqueueSuggestTask(requirementId: number, engine?: string): AgentTaskRow {
+  const suggestEngine =
+    engine ?? process.env.AGENT_SUGGEST_ENGINE ?? process.env.TESTCASE_ENGINE ?? "codex";
+  if (!ENGINES[suggestEngine]) throw new Error(`不支持的评审建议引擎：${suggestEngine}`);
+  assertNoActiveTask(requirementId, "suggest");
+  return createAgentTask(requirementId, suggestEngine, "", "", "suggest");
+}
+
 // 额度/限流类错误特征（claude 订阅 session limit、网关 429 等）
 export function isQuotaError(message: string): boolean {
   return /session limit|usage limit|rate.?limit|hit your.*limit|quota|429|too many requests/i.test(
@@ -291,6 +303,7 @@ export async function executeTask(taskId: number): Promise<void> {
     else if (task.kind === "review") await runReviewTask(taskId);
     else if (task.kind === "mockup") await runMockupTask(taskId);
     else if (task.kind === "classify") await runClassifyTask(taskId);
+    else if (task.kind === "suggest") await runSuggestTask(taskId);
     else await runTestcaseTask(taskId);
   } catch (err) {
     const message = String(err);
@@ -688,6 +701,91 @@ export async function runClassifyTask(taskId: number): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     addEvent(req.id, "classify_failed", "system", `模块识别失败（不阻塞评审）：${message}`);
+    throw error;
+  }
+}
+
+export function buildSuggestPrompt(req: Requirement, modules: RepoModule[]): string {
+  const moduleBrief = modules.map((m) => ({
+    moduleKey: m.moduleKey,
+    name: m.name,
+    description: m.description,
+  }));
+  return [
+    "你是资深需求评审专家。请对下面这条待评审需求【本身】做质量评估，帮助组长判断是否可进入开发。",
+    "针对以下维度各给一句简短评价（中文，指出问题或确认没问题）：",
+    "clarity 清晰度、completeness 完整性、feasibility 可行性、testability 可测性、risks 风险、scope 范围提示。",
+    "再给出 readiness 总体就绪度：ready(可开发) 或 needs_work(需完善)；summary 一句话总评；suggestions 具体改进条目（数组，无则空数组）。",
+    "只输出一个 JSON 对象，不要解释或代码围栏：",
+    '{"readiness":"needs_work","summary":"…","dimensions":{"clarity":"…","completeness":"…","feasibility":"…","testability":"…","risks":"…","scope":"…"},"suggestions":["…"]}',
+    "",
+    `需求标题：${req.title}`,
+    `优先级：${req.priority}`,
+    `需求描述：${req.description}`,
+    req.testScenarios ? `需求方核心测试场景：${req.testScenarios}` : "",
+    moduleBrief.length ? `目标仓库模块地图（供可行性/范围参考）：${JSON.stringify(moduleBrief)}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function parseReviewSuggestionOutput(raw: string): ReviewSuggestion {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("评审建议输出中未找到 JSON 对象");
+  const v = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+  const dim = (v.dimensions ?? {}) as Record<string, unknown>;
+  const s = (k: string) => (typeof dim[k] === "string" ? String(dim[k]).slice(0, 1000) : "");
+  const summary = typeof v.summary === "string" ? v.summary.slice(0, 1000) : "";
+  if (!summary) throw new Error("评审建议缺少 summary");
+  return {
+    readiness: v.readiness === "ready" ? "ready" : "needs_work",
+    summary,
+    dimensions: {
+      clarity: s("clarity"),
+      completeness: s("completeness"),
+      feasibility: s("feasibility"),
+      testability: s("testability"),
+      risks: s("risks"),
+      scope: s("scope"),
+    },
+    suggestions: Array.isArray(v.suggestions)
+      ? v.suggestions.filter((x): x is string => typeof x === "string").slice(0, 20)
+      : [],
+  };
+}
+
+// 评审建议：AI 评估需求本身质量（best-effort，失败只让本任务失败，不改需求状态）。
+export async function runSuggestTask(taskId: number): Promise<void> {
+  const task = getAgentTask(taskId);
+  if (!task) throw new Error("任务不存在");
+  const req = getRequirement(task.requirementId);
+  if (!req) throw new Error("需求不存在");
+  updateAgentTask(task.id, { status: "running", step: "suggest" });
+  addEvent(req.id, "suggest_started", "system", `评审建议任务 #${task.id}（${task.engine}）启动`);
+  try {
+    await ensureGuardApproved(req.id);
+    const repo = getRepoByName(req.repo);
+    const modules = repo ? listRepoModules(repo.id) : [];
+    const tempDir = path.join(DATA_DIR, "tmp");
+    fs.mkdirSync(tempDir, { recursive: true });
+    const rawOut = await runClassifyEngine(task, buildSuggestPrompt(req, modules), tempDir);
+    const suggestion = parseReviewSuggestionOutput(rawOut);
+    updateRequirementReviewSuggestion(req.id, suggestion);
+    updateAgentTask(task.id, {
+      status: "succeeded",
+      step: "done",
+      result: `就绪度：${suggestion.readiness === "ready" ? "可开发" : "需完善"}`,
+    });
+    addEvent(
+      req.id,
+      "suggest_succeeded",
+      "system",
+      `AI 评审建议已生成（${suggestion.readiness === "ready" ? "可开发" : "需完善"}）`
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    addEvent(req.id, "suggest_failed", "system", `评审建议生成失败（不阻塞评审）：${message}`);
     throw error;
   }
 }

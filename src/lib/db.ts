@@ -7,6 +7,7 @@ import type {
   RepoModule,
   Requirement,
   RequirementEvent,
+  ReviewSuggestion,
   TestCase,
   User,
 } from "./types";
@@ -53,6 +54,7 @@ export function db(): DatabaseSync {
       module_suggestion TEXT NOT NULL DEFAULT '',
       scope_locked_by TEXT NOT NULL DEFAULT '',
       scope_locked_at TEXT,
+      review_suggestion TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
@@ -202,6 +204,9 @@ function migrate(d: DatabaseSync) {
   if (!rcols.some((c) => c.name === "scope_locked_at")) {
     d.exec("ALTER TABLE requirements ADD COLUMN scope_locked_at TEXT");
   }
+  if (!rcols.some((c) => c.name === "review_suggestion")) {
+    d.exec("ALTER TABLE requirements ADD COLUMN review_suggestion TEXT NOT NULL DEFAULT ''");
+  }
   d.exec(`
     CREATE TABLE IF NOT EXISTS repo_modules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,6 +304,7 @@ function rowToRequirement(r: any): Requirement {
     moduleKey: r.module_key ?? "",
     scopePaths: parseStringArray(r.scope_paths),
     moduleSuggestion: parseModuleSuggestion(r.module_suggestion),
+    reviewSuggestion: parseReviewSuggestion(r.review_suggestion),
     scopeLockedBy: r.scope_locked_by ?? "",
     scopeLockedAt: r.scope_locked_at ?? null,
     createdAt: r.created_at,
@@ -326,6 +332,31 @@ function parseModuleSuggestion(raw: unknown): ModuleSuggestion | null {
       rationale: typeof value.rationale === "string" ? value.rationale : "",
       confidence: typeof value.confidence === "number" ? value.confidence : 0,
       scopePaths: parseStringArray(value.scopePaths),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseReviewSuggestion(raw: unknown): ReviewSuggestion | null {
+  if (!raw) return null;
+  try {
+    const v = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<ReviewSuggestion>;
+    if (!v || typeof v.summary !== "string") return null;
+    const d = (v.dimensions ?? {}) as Partial<ReviewSuggestion["dimensions"]>;
+    const s = (k: keyof ReviewSuggestion["dimensions"]) => (typeof d[k] === "string" ? d[k]! : "");
+    return {
+      readiness: v.readiness === "ready" ? "ready" : "needs_work",
+      summary: v.summary,
+      dimensions: {
+        clarity: s("clarity"),
+        completeness: s("completeness"),
+        feasibility: s("feasibility"),
+        testability: s("testability"),
+        risks: s("risks"),
+        scope: s("scope"),
+      },
+      suggestions: parseStringArray(v.suggestions),
     };
   } catch {
     return null;
@@ -399,6 +430,7 @@ export function updateRequirement(id: number, patch: Record<string, unknown>) {
     moduleSuggestion: "module_suggestion",
     scopeLockedBy: "scope_locked_by",
     scopeLockedAt: "scope_locked_at",
+    reviewSuggestion: "review_suggestion",
   };
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -406,7 +438,12 @@ export function updateRequirement(id: number, patch: Record<string, unknown>) {
     const col = colMap[k];
     if (!col) continue;
     sets.push(`${col} = ?`);
-    const jsonField = k === "testCases" || k === "execPlan" || k === "scopePaths" || k === "moduleSuggestion";
+    const jsonField =
+      k === "testCases" ||
+      k === "execPlan" ||
+      k === "scopePaths" ||
+      k === "moduleSuggestion" ||
+      k === "reviewSuggestion";
     vals.push(jsonField && v !== null && v !== "" ? JSON.stringify(v) : v);
   }
   if (!sets.length) return;
@@ -723,6 +760,13 @@ export function updateRequirementModuleSuggestion(
   updateRequirement(requirementId, { moduleSuggestion: suggestion ?? "" });
 }
 
+export function updateRequirementReviewSuggestion(
+  requirementId: number,
+  suggestion: ReviewSuggestion | null
+): void {
+  updateRequirement(requirementId, { reviewSuggestion: suggestion ?? "" });
+}
+
 export function lockRequirementScope(
   requirementId: number,
   moduleKeys: string[],
@@ -851,7 +895,7 @@ function rowToUser(r: any): User {
 
 /* ---------- 本地 Agent 任务 ---------- */
 
-export type AgentTaskKind = "develop" | "review" | "testcases" | "mockup" | "classify";
+export type AgentTaskKind = "develop" | "review" | "testcases" | "mockup" | "classify" | "suggest";
 
 export interface AgentTaskRow {
   id: number;

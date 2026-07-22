@@ -15,6 +15,7 @@ import {
   enqueueDevTask,
   enqueueMockupTask,
   enqueueReviewTask,
+  enqueueSuggestTask,
   enqueueTestcaseTask,
   ENGINES,
 } from "@/lib/agent-runner";
@@ -34,6 +35,7 @@ const BodySchema = z.object({
     "sync_github",
     "save_tests",
     "generate_mockup",
+    "reassess",
     "abandon",
   ]),
   reason: z.string().optional(),
@@ -95,6 +97,16 @@ export const POST = apiHandler(
         user.username,
         `手动发起前端渲染图生成（${t.engine}）${parsed.data.extra ? `，补充要求：${parsed.data.extra.slice(0, 80)}` : ""}`
       );
+      return ok(id);
+    }
+    if (action === "reassess") {
+      const canDo =
+        user.username === requirement.createdBy ||
+        user.role === "admin" ||
+        (user.role === "lead" && user.team === requirement.team);
+      if (!canDo) return forbidden("仅需求提交人或本组组长可发起评审建议");
+      const t = enqueueSuggestTask(id, parsed.data.engine);
+      addEvent(id, "suggest_requested", user.username, `发起 AI 评审建议重新评估（${t.engine}）`);
       return ok(id);
     }
     if (action === "save_tests") {

@@ -86,6 +86,7 @@ export const GET = apiHandler(
     const testcases = latestAgentTask(id, "testcases");
     const mockup = latestAgentTask(id, "mockup");
     const classify = latestAgentTask(id, "classify");
+    const suggest = latestAgentTask(id, "suggest");
     const log = task ? readLogTail(task.logPath) : "";
     const reviewLog = review ? readLogTail(review.logPath, 3000) : "";
     // 执行过程 transcript 取更大一段日志，转成可读的对话流
@@ -104,6 +105,7 @@ export const GET = apiHandler(
       testcases: decorate(testcases, online),
       mockup: decorate(mockup, online),
       classify: decorate(classify, online),
+      suggest: decorate(suggest, online),
     });
   }
 );

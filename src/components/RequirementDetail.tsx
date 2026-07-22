@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RepoModule, Requirement, RequirementEvent, TestCase, User } from "@/lib/types";
+import type {
+  RepoModule,
+  Requirement,
+  RequirementEvent,
+  ReviewSuggestion,
+  TestCase,
+  User,
+} from "@/lib/types";
 import StatusBadge from "@/components/StatusBadge";
 import AgentRuns from "@/components/AgentRuns";
 import LocalAgentTask from "@/components/LocalAgentTask";
@@ -25,6 +32,7 @@ type ActionName =
   | "sync_github"
   | "save_tests"
   | "generate_mockup"
+  | "reassess"
   | "abandon";
 
 export default function RequirementDetail({
@@ -68,6 +76,7 @@ export default function RequirementDetail({
     testcases: false,
     mockup: false,
     classify: false,
+    suggest: false,
   });
   const activePrev = useRef("");
   useEffect(() => {
@@ -87,6 +96,7 @@ export default function RequirementDetail({
             testcases: isActive(d.testcases),
             mockup: isActive(d.mockup),
             classify: isActive(d.classify),
+            suggest: isActive(d.suggest),
           };
           setTaskActive(next);
           setGenActive(next.testcases);
@@ -130,7 +140,8 @@ export default function RequirementDetail({
     taskActive.review ||
     taskActive.testcases ||
     taskActive.mockup ||
-    taskActive.classify;
+    taskActive.classify ||
+    taskActive.suggest;
 
   async function act(action: ActionName, extra: Record<string, unknown> = {}) {
     setBusy(action);
@@ -290,6 +301,21 @@ export default function RequirementDetail({
               </>
             )}
           </section>
+        )}
+
+        {/* AI 评审建议（对需求本身的评估，供组长参考；可改需求后重新评估） */}
+        {(["submitted", "requirement_rejected", "requirement_approved"].includes(req.status) ||
+          req.reviewSuggestion) && (
+          <ReviewSuggestionCard
+            suggestion={req.reviewSuggestion}
+            active={taskActive.suggest}
+            canReassess={
+              (isRequester || isLead) &&
+              ["submitted", "requirement_rejected"].includes(req.status)
+            }
+            disabled={aiRunning}
+            onReassess={() => act("reassess")}
+          />
         )}
 
         {/* 附件 */}
@@ -625,6 +651,94 @@ export default function RequirementDetail({
         </section>
       </div>
     </div>
+  );
+}
+
+function ReviewSuggestionCard({
+  suggestion,
+  active,
+  canReassess,
+  disabled,
+  onReassess,
+}: {
+  suggestion: ReviewSuggestion | null;
+  active: boolean;
+  canReassess: boolean;
+  disabled: boolean;
+  onReassess: () => void;
+}) {
+  const DIMS: { key: keyof ReviewSuggestion["dimensions"]; label: string }[] = [
+    { key: "clarity", label: "清晰度" },
+    { key: "completeness", label: "完整性" },
+    { key: "feasibility", label: "可行性" },
+    { key: "testability", label: "可测性" },
+    { key: "risks", label: "风险" },
+    { key: "scope", label: "范围提示" },
+  ];
+  return (
+    <section className="card mt-5 p-5">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-500">
+          🤖 AI 评审建议
+          {suggestion && (
+            <span
+              className={`rounded-full px-2 py-0.5 text-[11px] ${
+                suggestion.readiness === "ready"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-amber-100 text-amber-800"
+              }`}
+            >
+              {suggestion.readiness === "ready" ? "可开发" : "需完善"}
+            </span>
+          )}
+          {active && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2 py-0.5 text-[11px] text-sky-700">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+              评估中…
+            </span>
+          )}
+        </h2>
+        {canReassess && (
+          <button
+            className="btn-secondary !px-2.5 !py-1 text-xs"
+            disabled={disabled || active}
+            onClick={onReassess}
+            title="改完需求后可让 AI 重新评估"
+          >
+            {active ? "评估中…" : suggestion ? "🔄 重新评估" : "🤖 评估需求"}
+          </button>
+        )}
+      </div>
+
+      {!suggestion && !active && (
+        <p className="mt-2 text-xs text-zinc-400">
+          暂无评审建议。提交/修改需求后 AI 会自动评估，也可点右上「评估需求」。
+        </p>
+      )}
+      {suggestion && (
+        <div className="mt-3">
+          <p className="text-sm leading-6 text-zinc-700">{suggestion.summary}</p>
+          <dl className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2">
+            {DIMS.filter((d) => suggestion.dimensions[d.key]).map((d) => (
+              <div key={d.key} className="text-xs">
+                <dt className="font-medium text-zinc-500">{d.label}</dt>
+                <dd className="mt-0.5 leading-5 text-zinc-700">{suggestion.dimensions[d.key]}</dd>
+              </div>
+            ))}
+          </dl>
+          {suggestion.suggestions.length > 0 && (
+            <div className="mt-3 border-t border-zinc-100 pt-3">
+              <div className="text-xs font-medium text-zinc-500">改进建议</div>
+              <ul className="mt-1 ml-4 list-disc text-xs leading-6 text-zinc-700">
+                {suggestion.suggestions.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

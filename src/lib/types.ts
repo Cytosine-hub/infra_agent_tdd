@@ -103,6 +103,21 @@ export interface ModuleSuggestion {
   scopePaths: string[];
 }
 
+// 评审阶段 AI 对需求本身的评估建议（best-effort，供组长参考，不改状态）
+export interface ReviewSuggestion {
+  readiness: "ready" | "needs_work"; // 总体就绪度：可开发 / 需完善
+  summary: string; // 一句话总评
+  dimensions: {
+    clarity: string; // 清晰度
+    completeness: string; // 完整性
+    feasibility: string; // 可行性
+    testability: string; // 可测性
+    risks: string; // 风险
+    scope: string; // 范围提示
+  };
+  suggestions: string[]; // 具体改进条目
+}
+
 // 启动开发前的执行方案（AI 评估 + 人工可改）
 export interface ExecPlan {
   engine: string; // claude | codex
@@ -145,6 +160,7 @@ export interface Requirement {
   moduleSuggestion: ModuleSuggestion | null;
   scopeLockedBy: string;
   scopeLockedAt: string | null;
+  reviewSuggestion: ReviewSuggestion | null; // 评审阶段 AI 评估建议
   createdAt: string;
   updatedAt: string;
 }

@@ -4,7 +4,7 @@ import { addEvent, getRepoByName, getRequirement, listEvents, updateRequirement 
 import { requireUser } from "@/lib/session";
 import { apiHandler, badRequest, forbidden } from "@/lib/api";
 import { canUseRepo } from "@/lib/repo-access";
-import { enqueueClassifyTask, enqueueMockupTask } from "@/lib/agent-runner";
+import { enqueueClassifyTask, enqueueMockupTask, enqueueSuggestTask } from "@/lib/agent-runner";
 
 export const GET = apiHandler(
   async (_req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
@@ -78,6 +78,11 @@ export const PATCH = apiHandler(
       enqueueClassifyTask(id);
     } catch {
       /* 已有进行中的识别任务则跳过 */
+    }
+    try {
+      enqueueSuggestTask(id);
+    } catch {
+      /* 已有进行中的评审建议任务则跳过 */
     }
     return NextResponse.json({ requirement: getRequirement(id) });
   }
