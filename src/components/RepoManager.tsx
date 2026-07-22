@@ -69,6 +69,22 @@ export default function RepoManager() {
     load();
   }
 
+  // 修改仓库的 Git 服务地址（如自建 GitLab 迁移了域名），其余配置不变
+  async function changeHost(id: number, current: string) {
+    const host = window.prompt(
+      "修改该仓库的 Git 服务地址（自建 GitLab 域名，需含 http(s):// 前缀）：",
+      current
+    );
+    if (host === null || host.trim() === "") return;
+    const res = await fetch("/api/repos", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action: "set_host", host: host.trim() }),
+    });
+    if (!res.ok) setError((await res.json()).error ?? "修改地址失败");
+    load();
+  }
+
   async function add(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -247,6 +263,14 @@ export default function RepoManager() {
               >
                 {r.hasToken ? "更新 token" : "设置 token"}
               </button>
+              {r.provider === "gitlab" && (
+                <button
+                  className="text-xs text-zinc-500 hover:underline"
+                  onClick={() => changeHost(r.id, r.host)}
+                >
+                  改地址
+                </button>
+              )}
               {(r.onboardStatus === "ready" || r.onboardStatus === "failed") && (
                 <button
                   className="text-xs text-zinc-500 hover:underline"

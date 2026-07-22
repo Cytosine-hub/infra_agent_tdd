@@ -6,6 +6,7 @@ import {
   getRepoById,
   listRepos,
   requeueRepoOnboard,
+  setRepoHost,
   setRepoToken,
   teamExists,
 } from "@/lib/db";
@@ -71,14 +72,18 @@ export const DELETE = apiHandler(async (req: NextRequest) => {
   return NextResponse.json({ ok: true });
 });
 
-// action=reonboard 重新入驻；action=set_token 更新/清除专用令牌
+// action=reonboard 重新入驻；action=set_token 更新/清除专用令牌；action=set_host 修改仓库地址
 export const PATCH = apiHandler(async (req: NextRequest) => {
   const user = await requireUser();
   if (user.role === "member") return forbidden("仅组长或管理员可维护仓库列表");
-  const body = (await req.json()) as { id?: number; action?: string; token?: string };
+  const body = (await req.json()) as { id?: number; action?: string; token?: string; host?: string };
   if (!body.id || !getRepoById(body.id)) return badRequest("仓库不存在");
   if (body.action === "set_token") {
     setRepoToken(body.id, body.token ?? "");
+  } else if (body.action === "set_host") {
+    const host = (body.host ?? "").trim().replace(/\/+$/, "");
+    if (!host) return badRequest("仓库地址不能为空");
+    setRepoHost(body.id, host);
   } else {
     requeueRepoOnboard(body.id);
   }

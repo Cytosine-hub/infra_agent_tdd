@@ -519,6 +519,13 @@ export function setRepoToken(id: number, token: string) {
   db().prepare("UPDATE repos SET token = ? WHERE id = ?").run(token, id);
 }
 
+// 更新仓库的 Git 服务地址（如自建 GitLab 迁移了域名）。去尾斜杠，并按新 host 重定 provider。
+export function setRepoHost(id: number, host: string) {
+  const cleaned = host.replace(/\/+$/, "");
+  const provider = cleaned.includes("github.com") ? "github" : "gitlab";
+  db().prepare("UPDATE repos SET host = ?, provider = ? WHERE id = ?").run(cleaned, provider, id);
+}
+
 export function listRepos(): Repo[] {
   const rows = db().prepare("SELECT * FROM repos ORDER BY full_name").all() as any[];
   return rows.map(rowToRepo);
