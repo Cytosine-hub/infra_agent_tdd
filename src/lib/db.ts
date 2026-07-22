@@ -975,11 +975,21 @@ export function latestAgentTask(
   return r ? rowToTask(r) : null;
 }
 
-export function listActiveAgentTasks(): AgentTaskRow[] {
-  const rows = db()
-    .prepare("SELECT * FROM agent_tasks ORDER BY id DESC LIMIT 50")
-    .all() as any[];
-  return rows.map(rowToTask);
+// Agent 监控分页：按 id(=时间)倒序，游标用 beforeId（取更旧的一页）。多取 1 条判断 hasMore。
+export function listAgentTasksPage(
+  limit = 30,
+  beforeId?: number
+): { tasks: AgentTaskRow[]; hasMore: boolean } {
+  const lim = Math.min(Math.max(Math.trunc(limit) || 30, 1), 100);
+  const rows = (
+    beforeId && beforeId > 0
+      ? db()
+          .prepare("SELECT * FROM agent_tasks WHERE id < ? ORDER BY id DESC LIMIT ?")
+          .all(beforeId, lim + 1)
+      : db().prepare("SELECT * FROM agent_tasks ORDER BY id DESC LIMIT ?").all(lim + 1)
+  ) as any[];
+  const hasMore = rows.length > lim;
+  return { tasks: rows.slice(0, lim).map(rowToTask), hasMore };
 }
 
 // 守护进程认领下一个排队任务（单 runner 场景，无并发竞争）

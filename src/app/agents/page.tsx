@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { AgentTaskRow } from "@/lib/db";
 
@@ -43,28 +43,60 @@ const STEP_LABELS: Record<string, string> = {
   done: "完成",
 };
 
+// 按 id(=时间)倒序合并：更新已有任务状态 + 补入新任务，去重
+function mergeTasks(prev: TaskRow[], fetched: TaskRow[]): TaskRow[] {
+  const map = new Map(prev.map((t) => [t.id, t]));
+  for (const t of fetched) map.set(t.id, t);
+  return [...map.values()].sort((a, b) => b.id - a.id);
+}
+
+const PAGE_SIZE = 30;
+
 // 全局 Agent 监控：所有本地任务（用例生成/开发/审查）的引擎、模型、强度与实时状态
 export default function AgentsMonitorPage() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const tasksRef = useRef<TaskRow[]>([]);
+  const initedRef = useRef(false);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
 
-  const load = useCallback(() => {
-    fetch("/api/agent-tasks")
-      .then((r) => (r.ok ? r.json() : { tasks: [] }))
+  // 刷新最新一页：合并更新状态 + 补入新任务，不动已加载的更旧记录
+  const refreshLatest = useCallback(() => {
+    fetch(`/api/agent-tasks?limit=${PAGE_SIZE}`)
+      .then((r) => (r.ok ? r.json() : { tasks: [], hasMore: false }))
       .then((d) => {
-        const all: TaskRow[] = d.tasks;
-        const order = ["failed", "running", "queued", "succeeded"];
-        all.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status) || b.id - a.id);
-        setTasks(all);
+        setTasks((prev) => mergeTasks(prev, d.tasks as TaskRow[]));
+        if (!initedRef.current) {
+          setHasMore(Boolean(d.hasMore)); // hasMore 仅首屏据此判定；之后由「加载更多」推进
+          initedRef.current = true;
+        }
         setLoaded(true);
       });
   }, []);
 
+  // 加载更旧的一页（游标 = 当前最旧任务 id）
+  const loadMore = useCallback(() => {
+    const oldest = tasksRef.current.at(-1)?.id;
+    if (!oldest) return;
+    setLoadingMore(true);
+    fetch(`/api/agent-tasks?limit=${PAGE_SIZE}&before=${oldest}`)
+      .then((r) => (r.ok ? r.json() : { tasks: [], hasMore: false }))
+      .then((d) => {
+        setTasks((prev) => mergeTasks(prev, d.tasks as TaskRow[]));
+        setHasMore(Boolean(d.hasMore));
+      })
+      .finally(() => setLoadingMore(false));
+  }, []);
+
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 10_000);
+    refreshLatest();
+    const timer = setInterval(refreshLatest, 10_000);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [refreshLatest]);
 
   const active = tasks.filter((t) => t.status === "queued" || t.status === "running").length;
   const failed = tasks.filter((t) => t.status === "failed").length;
@@ -162,6 +194,22 @@ export default function AgentsMonitorPage() {
           </tbody>
         </table>
       </div>
+
+      {loaded && tasks.length > 0 && (
+        <div className="mt-4 flex justify-center">
+          {hasMore ? (
+            <button
+              className="btn-secondary !px-4 !py-1.5 text-xs"
+              disabled={loadingMore}
+              onClick={loadMore}
+            >
+              {loadingMore ? "加载中…" : "加载更多"}
+            </button>
+          ) : (
+            <span className="text-xs text-zinc-400">已到底（共 {tasks.length} 条）</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
